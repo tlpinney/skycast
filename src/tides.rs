@@ -19,6 +19,9 @@ const MARINE_URL: &str = "https://marine-api.open-meteo.com/v1/marine";
 const MAX_STATION_KM: f64 = 80.0;
 /// How far out to look for a sea grid point in the marine model.
 const MARINE_RINGS_KM: [f64; 3] = [10.0, 25.0, 50.0];
+/// Consecutive highs and lows are never this far apart (even diurnal tides are ~12–13 h);
+/// a larger gap means bad data, and filling it would build an enormous curve.
+const MAX_EVENT_GAP: Duration = Duration::hours(30);
 const STATION_CACHE_MAX_AGE: StdDuration = StdDuration::from_secs(30 * 24 * 3600);
 
 #[derive(Debug, Clone)]
@@ -138,8 +141,12 @@ fn stations() -> Result<Vec<Station>> {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        // Write then rename, so another instance never reads a half-written file.
         if let Ok(json) = serde_json::to_vec(&list.stations) {
-            let _ = std::fs::write(p, json);
+            let tmp = p.with_extension(format!("json.{}.tmp", std::process::id()));
+            if std::fs::write(&tmp, json).is_ok() && std::fs::rename(&tmp, p).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
         }
     }
     Ok(list.stations)
@@ -203,7 +210,7 @@ fn fetch_noaa(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Ti
     if let Some(e) = resp.error {
         bail!("NOAA: {}", e.message);
     }
-    let events: Vec<TideEvent> = resp
+    let mut events: Vec<TideEvent> = resp
         .predictions
         .unwrap_or_default()
         .into_iter()
@@ -215,6 +222,7 @@ fn fetch_noaa(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Ti
             })
         })
         .collect();
+    events.sort_by_key(|e| e.time);
     if events.len() < 2 {
         return Ok(None);
     }
@@ -256,10 +264,10 @@ pub fn curve_from_events(events: &[TideEvent]) -> Vec<(NaiveDateTime, f64)> {
     let mut out = Vec::new();
     for pair in events.windows(2) {
         let (a, b) = (&pair[0], &pair[1]);
-        let span = (b.time - a.time).num_seconds() as f64;
-        if span <= 0.0 {
+        if b.time <= a.time || b.time - a.time > MAX_EVENT_GAP {
             continue;
         }
+        let span = (b.time - a.time).num_seconds() as f64;
         let mut t = a.time;
         while t < b.time {
             let f = (t - a.time).num_seconds() as f64 / span;
@@ -435,6 +443,18 @@ mod tests {
         assert!((mid - 1.6).abs() < 0.05, "{mid}");
         assert!(tides.height_at(at(3, 1, 0)).is_none());
         assert_eq!(tides.next_events(at(3, 10, 0)).next().map(|e| e.high), Some(true));
+    }
+
+    #[test]
+    fn curve_skips_implausible_gaps() {
+        // Events years apart (bad data) must not be filled with 10-minute points.
+        let far = at(3, 0, 0) + Duration::days(3650);
+        let ev = vec![
+            TideEvent { time: at(3, 2, 0), height: 2.0, high: true },
+            TideEvent { time: at(3, 8, 0), height: 0.0, high: false },
+            TideEvent { time: far, height: 2.0, high: true },
+        ];
+        assert!(curve_from_events(&ev).len() < 50);
     }
 
     #[test]
