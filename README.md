@@ -1,13 +1,18 @@
 # weather
 
 A terminal weather widget built with [ratatui](https://ratatui.rs), meant to sit in a
-[herdr](https://herdr.dev) pane. Three screens:
+[herdr](https://herdr.dev) pane. Five screens:
 
 - **Today**: summary, current conditions, air quality, rain timing, temperature and
   precipitation charts (when the pane is tall enough) and an hourly strip to midnight.
 - **7 days**: one row per day with a high/low range bar, plus a highs-and-lows bar chart.
 - **Radar**: the last two hours of precipitation radar drawn in Braille over coastlines and
   state/country borders, with zoom and animation.
+- **Sun**: sunrise and sunset, day length and its change since yesterday, solar noon, golden
+  hour and the three twilights; the moon's phase and the next new and full moon; the sun's
+  path through today and daylight through the year.
+- **Tides**: the current level and whether it's rising or falling, the next high and low,
+  a two-day tide curve and a high/low table.
 
 Active US weather alerts show as a banner on every screen.
 
@@ -24,6 +29,11 @@ Data sources (none need an API key):
 - Forecast, geocoding and air quality: [Open-Meteo](https://open-meteo.com/)
 - Weather alerts (US only): [National Weather Service](https://www.weather.gov/documentation/services-web-api)
 - Radar: [RainViewer](https://www.rainviewer.com/api.html)
+- Tides: [NOAA CO-OPS](https://tidesandcurrents.noaa.gov/web_services_info.html) predictions from
+  the nearest station within 80 km (US coasts), otherwise the
+  [Open-Meteo marine model](https://open-meteo.com/en/docs/marine-weather-api) at the nearest sea
+  grid point within 50 km. NOAA's station list is cached in `~/.cache/weather-tui/` for a month.
+- Sun and moon: computed locally (NOAA solar equations, Meeus lunar longitude), no network
 - Map outlines: [Natural Earth](https://www.naturalearthdata.com/) 1:50m (public domain), converted
   to `assets/*.bin` by `tools/ne2bin.py`
 
@@ -40,7 +50,7 @@ Keys:
 
 | Key | Does |
 | --- | --- |
-| `Tab` / `←` `→` | switch screens (or `1` Today, `2` 7 days, `3` Radar) |
+| `Tab` / `←` `→` | switch screens (or `1` Today, `2` 7 days, `3` Radar, `4` Sun, `5` Tides) |
 | `a` | weather alert details |
 | `r` | refresh |
 | `q` / `Esc` | quit |

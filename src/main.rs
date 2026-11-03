@@ -2,6 +2,8 @@ mod api;
 mod basemap;
 mod precip;
 mod radar;
+mod solar;
+mod tides;
 mod ui;
 mod wmo;
 
@@ -46,7 +48,7 @@ Options:
   -m, --metric            Celsius, km/h, mm (default: Fahrenheit, mph, inches)
   -h, --help              Show this help
 
-Keys: Tab / ←→ switch screens (or 1 Today, 2 7 days, 3 Radar), a weather alerts,
+Keys: Tab / ←→ switch screens (1 Today, 2 7 days, 3 Radar, 4 Sun, 5 Tides), a alerts,
       r refresh, q / Esc quit
 Radar: + / - zoom, space play/pause the last two hours, , / . step one scan";
 
@@ -106,10 +108,12 @@ pub enum Screen {
     Today,
     Week,
     Radar,
+    Sun,
+    Tides,
 }
 
 impl Screen {
-    const ALL: [Screen; 3] = [Screen::Today, Screen::Week, Screen::Radar];
+    const ALL: [Screen; 5] = [Screen::Today, Screen::Week, Screen::Radar, Screen::Sun, Screen::Tides];
 
     fn step(self, by: isize) -> Self {
         let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0) as isize;
@@ -180,14 +184,26 @@ impl RadarState {
     }
 }
 
+/// Tide predictions, fetched when the Tides tab is first opened and again each new day.
+#[derive(Default)]
+pub struct TideState {
+    /// Some(None): looked, and there's no tide data near this place.
+    pub data: Option<Option<tides::Tides>>,
+    pub error: Option<String>,
+    pub pending: bool,
+    fetched_for: Option<chrono::NaiveDate>,
+}
+
 enum RadarReq {
     Frames,
     Tile(String, radar::TileKey),
+    Tides(Place, Units, chrono::NaiveDate),
 }
 
 enum RadarResp {
     Frames(Result<radar::Frames, String>),
     Tile(radar::TileKey, Result<radar::Tile, String>),
+    Tides(chrono::NaiveDate, Result<Option<tides::Tides>, String>),
 }
 
 /// A few threads so a screen's worth of tiles loads in parallel.
@@ -205,6 +221,9 @@ fn spawn_radar_workers(n: usize) -> (mpsc::Sender<RadarReq>, mpsc::Receiver<Rada
                     RadarReq::Tile(host, key) => {
                         let r = radar::fetch_tile(&host, &key).map_err(|e| format!("{e:#}"));
                         RadarResp::Tile(key, r)
+                    }
+                    RadarReq::Tides(place, units, day) => {
+                        RadarResp::Tides(day, tides::fetch(&place, units, day).map_err(|e| format!("{e:#}")))
                     }
                 };
                 if res_tx.send(resp).is_err() {
@@ -257,10 +276,34 @@ fn radar_tick(app: &mut App, tx: &mpsc::Sender<RadarReq>) -> Result<()> {
     Ok(())
 }
 
+/// Ask for tide predictions if the Tides tab needs them.
+fn tides_tick(app: &mut App, tx: &mpsc::Sender<RadarReq>) -> Result<()> {
+    let (Some(place), Some(fc)) = (&app.place, app.last_good.as_deref()) else { return Ok(()) };
+    let today = fc.now.date();
+    let t = &mut app.tides;
+    if !t.pending && t.fetched_for != Some(today) {
+        t.pending = true;
+        tx.send(RadarReq::Tides(place.clone(), app.units, today))?;
+    }
+    Ok(())
+}
+
 fn radar_receive(app: &mut App, rx: &mpsc::Receiver<RadarResp>) {
     let r = &mut app.radar;
     while let Ok(resp) = rx.try_recv() {
         match resp {
+            RadarResp::Tides(day, res) => {
+                let t = &mut app.tides;
+                t.pending = false;
+                t.fetched_for = Some(day);
+                match res {
+                    Ok(data) => {
+                        t.data = Some(data);
+                        t.error = None;
+                    }
+                    Err(e) => t.error = Some(e),
+                }
+            }
             RadarResp::Frames(Ok(frames)) => {
                 let following_latest =
                     r.frames.as_ref().is_none_or(|old| r.frame + 1 >= old.frames.len());
@@ -294,6 +337,7 @@ fn radar_receive(app: &mut App, rx: &mpsc::Receiver<RadarResp>) {
 pub struct App {
     pub screen: Screen,
     pub radar: RadarState,
+    pub tides: TideState,
     /// Alert details popup.
     pub show_alerts: bool,
     pub alert_scroll: u16,
@@ -359,6 +403,7 @@ fn main() -> Result<()> {
     let mut app = App {
         screen: Screen::Today,
         radar: RadarState::new(),
+        tides: TideState::default(),
         show_alerts: false,
         alert_scroll: 0,
         place: None,
@@ -394,6 +439,9 @@ fn main() -> Result<()> {
 
             if app.screen == Screen::Radar {
                 radar_tick(&mut app, &radar_tx)?;
+            }
+            if app.screen == Screen::Tides {
+                tides_tick(&mut app, &radar_tx)?;
             }
 
             let tick = if app.screen == Screen::Radar && (app.radar.playing || app.radar.loading()) {
@@ -432,6 +480,8 @@ fn main() -> Result<()> {
                         KeyCode::Char('1') | KeyCode::Char('t') => app.screen = Screen::Today,
                         KeyCode::Char('2') | KeyCode::Char('w') => app.screen = Screen::Week,
                         KeyCode::Char('3') => app.screen = Screen::Radar,
+                        KeyCode::Char('4') => app.screen = Screen::Sun,
+                        KeyCode::Char('5') => app.screen = Screen::Tides,
                         KeyCode::Char('r') if !app.fetching => {
                             app.fetching = true;
                             req_tx.send(())?;

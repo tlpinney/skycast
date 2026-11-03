@@ -18,6 +18,8 @@ use crate::wmo;
 use crate::{App, Screen, Status};
 
 mod compact;
+mod sun;
+mod tide;
 
 const HOUR_COL_WIDTH: u16 = 6;
 /// Below this many rows the Today screen switches to its compact layout.
@@ -72,12 +74,54 @@ fn short_hour(t: NaiveDateTime) -> String {
     }
 }
 
+/// Two blank x-axis labels: keeps the chart's label row (and axis line) without ratatui
+/// placing any text there. Pair with [`draw_x_labels`].
+fn blank_x_labels() -> Vec<Line<'static>> {
+    vec![Line::raw(""), Line::raw("")]
+}
+
+/// Draw x-axis labels at their true positions. ratatui centers the middle labels in equal
+/// slots, so with n labels the i-th lands at (i + ½)/n of the width instead of i/(n − 1),
+/// which drifts noticeably on wide charts. Call after rendering a chart built with
+/// [`blank_x_labels`]; `inner` is the chart block's inner area.
+fn draw_x_labels(f: &mut Frame, inner: Rect, y_labels: &[Line], bounds: [f64; 2], ticks: &[(f64, &str)]) {
+    // Mirrors ratatui's Chart layout: y labels (capped at a third of the width), then the axis.
+    let y_w = y_labels.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let gx = inner.x + y_w.min(inner.width / 3) + 1;
+    let gw = inner.right().saturating_sub(gx);
+    if gw < 2 || inner.height < 3 || bounds[1] <= bounds[0] {
+        return;
+    }
+    let row = inner.bottom() - 1;
+    let buf = f.buffer_mut();
+    let mut free_from = inner.x;
+    for (v, text) in ticks {
+        let frac = ((v - bounds[0]) / (bounds[1] - bounds[0])).clamp(0.0, 1.0);
+        let col = gx + (frac * f64::from(gw - 1)).round() as u16;
+        let w = text.chars().count() as u16;
+        let x = col.saturating_sub(w / 2).max(inner.x).min(inner.right().saturating_sub(w));
+        if x < free_from {
+            continue; // would overlap the previous label
+        }
+        buf.set_string(x, row, *text, Style::new().dark_gray());
+        free_from = x + w + 1;
+    }
+}
+
+/// Midnight-to-midnight ticks every six hours.
+const DAY_TICKS: [(f64, &str); 5] = [(0.0, "12a"), (6.0, "6a"), (12.0, "12p"), (18.0, "6p"), (24.0, "12a")];
+
 fn panel(title: &str) -> Block<'_> {
-    Block::bordered()
+    let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().dark_gray())
-        .padding(Padding::horizontal(1))
-        .title(Span::styled(format!(" {title} "), Style::new().bold()))
+        .padding(Padding::horizontal(1));
+    // An empty title means the caller adds its own (e.g. a styled multi-part one).
+    if title.is_empty() {
+        block
+    } else {
+        block.title(Span::styled(format!(" {title} "), Style::new().bold()))
+    }
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -115,6 +159,15 @@ pub fn draw(f: &mut Frame, app: &App) {
             Screen::Today => draw_today(f, body, fc, app.units),
             Screen::Week => draw_week(f, body, fc, app.units),
             Screen::Radar => draw_radar(f, body, app),
+            Screen::Sun => {
+                if let Some(place) = &app.place {
+                    sun::draw(f, body, fc, place);
+                }
+            }
+            Screen::Tides => {
+                let name = app.place.as_ref().map_or("here", |p| p.name.as_str());
+                tide::draw(f, body, fc, &app.tides, name);
+            }
         },
         (None, Status::Error(e)) => {
             let p = Paragraph::new(format!("Couldn't load the forecast:\n\n{e}\n\nRetrying in a minute, or press r to retry now."))
@@ -248,6 +301,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         tab("7 days", Screen::Week),
         Span::raw(" "),
         tab("Radar", Screen::Radar),
+        Span::raw(" "),
+        tab("Sun", Screen::Sun),
+        Span::raw(" "),
+        tab("Tides", Screen::Tides),
     ]);
     let right = Line::from(Span::styled(format!("{date} "), Style::new().gray())).alignment(Alignment::Right);
     f.render_widget(left, area);
@@ -450,7 +507,6 @@ fn draw_chart(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
             .style(Style::new().fg(temp_color(fc.high, units)))
             .data(&temps),
     ];
-    let x_labels: Vec<Line> = ["12a", "6a", "12p", "6p", "12a"].into_iter().map(Line::from).collect();
     let y_labels: Vec<Line> = [lo, (lo + hi) / 2.0, hi].into_iter().map(|v| Line::from(deg(v))).collect();
     let block = panel("Temperature").title(Line::from(vec![
         Span::styled("━", Style::new().yellow()),
@@ -459,11 +515,13 @@ fn draw_chart(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
             Style::new().dark_gray(),
         ),
     ]));
+    let inner = block.inner(area);
     let chart = Chart::new(datasets)
         .block(block)
-        .x_axis(Axis::default().bounds([0.0, 24.0]).labels(x_labels).style(Style::new().dark_gray()))
-        .y_axis(Axis::default().bounds([lo, hi]).labels(y_labels).style(Style::new().dark_gray()));
+        .x_axis(Axis::default().bounds([0.0, 24.0]).labels(blank_x_labels()).style(Style::new().dark_gray()))
+        .y_axis(Axis::default().bounds([lo, hi]).labels(y_labels.clone()).style(Style::new().dark_gray()));
     f.render_widget(chart, area);
+    draw_x_labels(f, inner, &y_labels, [0.0, 24.0], &DAY_TICKS);
 }
 
 fn draw_precip_chart(f: &mut Frame, area: Rect, fc: &Forecast) {
@@ -488,13 +546,15 @@ fn draw_precip_chart(f: &mut Frame, area: Rect, fc: &Forecast) {
             .style(Style::new().blue())
             .data(&probs),
     ];
-    let x_labels: Vec<Line> = ["12a", "6a", "12p", "6p", "12a"].into_iter().map(Line::from).collect();
     let y_labels: Vec<Line> = ["0%", "50%", "100%"].into_iter().map(Line::from).collect();
+    let block = panel("Chance of precipitation");
+    let inner = block.inner(area);
     let chart = Chart::new(datasets)
-        .block(panel("Chance of precipitation"))
-        .x_axis(Axis::default().bounds([0.0, 24.0]).labels(x_labels).style(Style::new().dark_gray()))
-        .y_axis(Axis::default().bounds([0.0, 100.0]).labels(y_labels).style(Style::new().dark_gray()));
+        .block(block)
+        .x_axis(Axis::default().bounds([0.0, 24.0]).labels(blank_x_labels()).style(Style::new().dark_gray()))
+        .y_axis(Axis::default().bounds([0.0, 100.0]).labels(y_labels.clone()).style(Style::new().dark_gray()));
     f.render_widget(chart, area);
+    draw_x_labels(f, inner, &y_labels, [0.0, 24.0], &DAY_TICKS);
 }
 
 fn draw_hourly(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {

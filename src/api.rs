@@ -106,6 +106,8 @@ pub struct Air {
 pub struct Forecast {
     /// Local time at the location, per the API.
     pub now: NaiveDateTime,
+    /// The location's offset from UTC, in seconds.
+    pub utc_offset_secs: i32,
     pub current_temp: f64,
     pub feels_like: f64,
     pub humidity: u8,
@@ -226,6 +228,7 @@ fn expand_state(q: &str) -> &str {
 
 #[derive(Deserialize)]
 struct RawForecast {
+    utc_offset_seconds: i32,
     current: RawCurrent,
     hourly: RawHourly,
     daily: RawDaily,
@@ -355,6 +358,7 @@ pub fn fetch_today(place: &Place, units: Units) -> Result<Forecast> {
     let c = &raw.current;
     Ok(Forecast {
         now,
+        utc_offset_secs: raw.utc_offset_seconds,
         current_temp: c.temperature_2m,
         feels_like: c.apparent_temperature,
         humidity: c.relative_humidity_2m as u8,
