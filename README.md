@@ -11,6 +11,14 @@ A terminal weather widget built with [ratatui](https://ratatui.rs), meant to sit
 
 Active US weather alerts show as a banner on every screen.
 
+Short panes get compact layouts: under 18 rows the Today screen becomes a dense summary,
+and at 1–3 rows the whole widget becomes a strip with no header or footer, e.g.
+
+```
+ ☾ 63° · H 73° L 44° · AQI 54 · Clear sky · Herndon
+ now ☾63°  7p ☾62°  8p ☾61°  9p ☾59°  10p ☾58°  11p ☾58°
+```
+
 Data sources (none need an API key):
 
 - Forecast, geocoding and air quality: [Open-Meteo](https://open-meteo.com/)

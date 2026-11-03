@@ -35,6 +35,13 @@ impl Units {
             Units::Metric => "km/h",
         }
     }
+    /// Pressure from hPa: inHg for imperial, hPa for metric.
+    pub fn pressure(self, hpa: f64) -> String {
+        match self {
+            Units::Imperial => format!("{:.2} inHg", hpa * 0.029_53),
+            Units::Metric => format!("{hpa:.0} hPa"),
+        }
+    }
     pub fn precip(self) -> &'static str {
         match self {
             Units::Imperial => "in",
@@ -105,6 +112,12 @@ pub struct Forecast {
     pub current_code: u8,
     pub current_wind: f64,
     pub current_is_day: bool,
+    /// Degrees the wind is coming from.
+    pub wind_dir: Option<f64>,
+    pub gusts: Option<f64>,
+    /// Sea-level pressure in hPa (Open-Meteo has no unit option for it).
+    pub pressure_hpa: Option<f64>,
+    pub cloud_cover: Option<u8>,
 
     pub high: f64,
     pub low: f64,
@@ -227,6 +240,10 @@ struct RawCurrent {
     weather_code: u8,
     wind_speed_10m: f64,
     is_day: u8,
+    wind_direction_10m: Option<f64>,
+    wind_gusts_10m: Option<f64>,
+    pressure_msl: Option<f64>,
+    cloud_cover: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -268,7 +285,9 @@ pub fn fetch_today(place: &Place, units: Units) -> Result<Forecast> {
         ("forecast_days", "7".into()),
         (
             "current",
-            "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day".into(),
+            "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day,\
+             wind_direction_10m,wind_gusts_10m,pressure_msl,cloud_cover"
+                .into(),
         ),
         ("hourly", "temperature_2m,precipitation_probability,weather_code,is_day".into()),
         (
@@ -342,6 +361,10 @@ pub fn fetch_today(place: &Place, units: Units) -> Result<Forecast> {
         current_code: c.weather_code,
         current_wind: c.wind_speed_10m,
         current_is_day: c.is_day == 1,
+        wind_dir: c.wind_direction_10m,
+        gusts: c.wind_gusts_10m,
+        pressure_hpa: c.pressure_msl,
+        cloud_cover: c.cloud_cover.map(|v| v as u8),
         high: first(&d.temperature_2m_max).context("missing high")?,
         low: first(&d.temperature_2m_min).context("missing low")?,
         day_code: first(&d.weather_code).unwrap_or(0),
@@ -494,4 +517,25 @@ fn fetch_alerts(place: &Place) -> Result<Option<Vec<Alert>>> {
         .collect();
     alerts.sort_by_key(|a| std::cmp::Reverse(a.severity));
     Ok(Some(alerts))
+}
+
+/// 8-point compass name for a "wind from" bearing in degrees.
+pub fn compass(deg: f64) -> &'static str {
+    const NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    NAMES[((deg.rem_euclid(360.0) + 22.5) / 45.0) as usize % 8]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compass;
+
+    #[test]
+    fn compass_points() {
+        assert_eq!(compass(0.0), "N");
+        assert_eq!(compass(22.4), "N");
+        assert_eq!(compass(22.6), "NE");
+        assert_eq!(compass(135.0), "SE");
+        assert_eq!(compass(350.0), "N");
+        assert_eq!(compass(-90.0), "W");
+    }
 }

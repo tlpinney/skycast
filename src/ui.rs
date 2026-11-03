@@ -13,11 +13,17 @@ use ratatui::{
     widgets::{Axis, Bar, BarChart, BarGroup, Block, Clear, Padding, BorderType, Chart, Dataset, GraphType, Paragraph, Wrap},
 };
 
-use crate::api::{Alert, Forecast, Severity, Units, aqi_category};
+use crate::api::{Alert, Forecast, Severity, Units, aqi_category, compass};
 use crate::wmo;
 use crate::{App, Screen, Status};
 
+mod compact;
+
 const HOUR_COL_WIDTH: u16 = 6;
+/// Below this many rows the Today screen switches to its compact layout.
+const FULL_TODAY_MIN_HEIGHT: u16 = 16;
+/// At or below this many rows the whole window becomes a strip with no header or footer.
+const STRIP_MAX_HEIGHT: u16 = 3;
 
 fn temp_color(t: f64, units: Units) -> Color {
     let f = match units {
@@ -76,6 +82,10 @@ fn panel(title: &str) -> Block<'_> {
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
+    if area.height <= STRIP_MAX_HEIGHT {
+        draw_strip(f, area, app);
+        return;
+    }
     let [header, body, footer] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)])
             .areas(area);
@@ -101,6 +111,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     match (forecast, &app.status) {
         (Some(fc), _) => match app.screen {
+            Screen::Today if body.height < FULL_TODAY_MIN_HEIGHT => compact::draw_today(f, body, fc, app.units),
             Screen::Today => draw_today(f, body, fc, app.units),
             Screen::Week => draw_week(f, body, fc, app.units),
             Screen::Radar => draw_radar(f, body, app),
@@ -120,6 +131,21 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.show_alerts {
         draw_alert_popup(f, area, forecast, app.alert_scroll);
+    }
+}
+
+fn draw_strip(f: &mut Frame, area: Rect, app: &App) {
+    let forecast = match &app.status {
+        Status::Ready(fc) => Some(fc.as_ref()),
+        _ => app.last_good.as_deref(),
+    };
+    match (forecast, &app.status) {
+        (Some(fc), _) => {
+            let place = app.place.as_ref().map_or("", |p| p.name.split(',').next().unwrap_or(&p.name));
+            compact::draw_strip(f, area, fc, app.units, place);
+        }
+        (None, Status::Error(e)) => f.render_widget(Line::styled(format!(" weather: {e}"), Style::new().red()), area),
+        _ => f.render_widget(Line::styled(" Fetching forecast…", Style::new().dark_gray()), area),
     }
 }
 
@@ -259,7 +285,8 @@ fn draw_today(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
     let show_chart = area.height >= 24;
     let [top, chart, hourly] = Layout::vertical([
         Constraint::Length(9),
-        if show_chart { Constraint::Fill(1) } else { Constraint::Length(0) },
+        // Charts stop growing past this, so tall panes don't stretch them.
+        if show_chart { Constraint::Max(30) } else { Constraint::Length(0) },
         Constraint::Length(7),
     ])
     .flex(Flex::Start)
@@ -347,7 +374,29 @@ fn draw_now(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
         ]),
         Line::from(vec![label("Feels like "), Span::raw(deg(fc.feels_like))]),
         Line::from(vec![label("Humidity "), Span::raw(format!("{}%", fc.humidity))]),
-        Line::from(vec![label("Wind "), Span::raw(format!("{:.0} {}", fc.current_wind, units.speed()))]),
+        Line::from({
+            let mut spans = vec![label("Wind "), Span::raw(format!("{:.0} {}", fc.current_wind, units.speed()))];
+            if let Some(d) = fc.wind_dir {
+                spans.push(Span::raw(format!(" {}", compass(d))));
+            }
+            // Gusts only matter when they're well above the steady wind.
+            if let Some(g) = fc.gusts.filter(|g| *g >= fc.current_wind + 5.0) {
+                spans.push(label(&format!(", gusts {g:.0}")));
+            }
+            spans
+        }),
+        Line::from({
+            let mut spans = Vec::new();
+            // Kept short: the Now panel is narrow. The unit (inHg / hPa) says it's pressure.
+            if let Some(p) = fc.pressure_hpa {
+                spans.push(Span::raw(units.pressure(p)));
+            }
+            if let Some(c) = fc.cloud_cover {
+                spans.push(label(if spans.is_empty() { "clouds " } else { " · clouds " }));
+                spans.push(Span::raw(format!("{c}%")));
+            }
+            spans
+        }),
         match &fc.air {
             Some(a) => {
                 let mut spans = vec![label("Air "), aqi_span(a.current_aqi)];
@@ -380,8 +429,16 @@ fn draw_chart(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
     let hi = temps.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).ceil() + 2.0;
     let now_x = fc.now.hour() as f64 + fc.now.minute() as f64 / 60.0;
     let now_line: Vec<(f64, f64)> = (0..=20).map(|i| (now_x, lo + (hi - lo) * i as f64 / 20.0)).collect();
+    // Daylight: a bar along the top of the chart from sunrise to sunset.
+    let frac = |t: NaiveDateTime| t.hour() as f64 + t.minute() as f64 / 60.0;
+    let daylight = [(frac(fc.sunrise), hi), (frac(fc.sunset), hi)];
 
     let datasets = vec![
+        Dataset::default()
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::new().yellow())
+            .data(&daylight),
         Dataset::default()
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
@@ -395,8 +452,15 @@ fn draw_chart(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
     ];
     let x_labels: Vec<Line> = ["12a", "6a", "12p", "6p", "12a"].into_iter().map(Line::from).collect();
     let y_labels: Vec<Line> = [lo, (lo + hi) / 2.0, hi].into_iter().map(|v| Line::from(deg(v))).collect();
+    let block = panel("Temperature").title(Line::from(vec![
+        Span::styled("━", Style::new().yellow()),
+        Span::styled(
+            format!(" daylight {} – {} ", fc.sunrise.format("%-I:%M"), fc.sunset.format("%-I:%M")),
+            Style::new().dark_gray(),
+        ),
+    ]));
     let chart = Chart::new(datasets)
-        .block(panel("Temperature"))
+        .block(block)
         .x_axis(Axis::default().bounds([0.0, 24.0]).labels(x_labels).style(Style::new().dark_gray()))
         .y_axis(Axis::default().bounds([lo, hi]).labels(y_labels).style(Style::new().dark_gray()));
     f.render_widget(chart, area);
