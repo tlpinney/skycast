@@ -1,0 +1,12 @@
+# Weekly pull requests for outdated Cargo dependencies. Security fixes are opened
+# immediately regardless of this schedule (enabled in the repository settings).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # One PR for all minor and patch bumps instead of one per crate.
+      minor-and-patch:
+        update-types: [minor, patch]
