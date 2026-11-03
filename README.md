@@ -1,7 +1,7 @@
 # weather
 
-A terminal weather widget built with [ratatui](https://ratatui.rs), meant to sit in a
-[herdr](https://herdr.dev) pane. Five screens:
+A terminal weather widget built with [ratatui](https://ratatui.rs), sized to sit in a
+terminal pane alongside your work. Five screens:
 
 - **Today**: summary, current conditions, air quality, rain timing, temperature and
   precipitation charts (when the pane is tall enough) and an hourly strip to midnight.
