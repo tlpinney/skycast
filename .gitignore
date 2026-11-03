@@ -1,13 +1,6 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-
 # Rust
 /target
+
+# Python bytecode (tools/ne2bin.py)
+__pycache__/
+*.py[oc]

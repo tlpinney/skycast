@@ -1,17 +1,15 @@
 # weather
 
-Two things live here:
+A terminal weather widget built with [ratatui](https://ratatui.rs), meant to sit in a
+[herdr](https://herdr.dev) pane. Three screens:
 
-- **`weather` (Rust, ratatui)**: a terminal weather widget meant to sit in a herdr pane.
-  Three screens:
-  - **Today**: summary, current conditions, air quality, rain timing, temperature and
-    precipitation charts (when the pane is tall enough) and an hourly strip to midnight.
-  - **7 days**: one row per day with a high/low range bar, plus a highs-and-lows bar chart.
-  - **Radar**: the last two hours of precipitation radar drawn in Braille over coastlines and
-    state/country borders, with zoom and animation.
+- **Today**: summary, current conditions, air quality, rain timing, temperature and
+  precipitation charts (when the pane is tall enough) and an hourly strip to midnight.
+- **7 days**: one row per day with a high/low range bar, plus a highs-and-lows bar chart.
+- **Radar**: the last two hours of precipitation radar drawn in Braille over coastlines and
+  state/country borders, with zoom and animation.
 
-  Active US weather alerts show as a banner on every screen.
-- **`weather.py` (Python)**: an MCP server that exposes `get_forecast`.
+Active US weather alerts show as a banner on every screen.
 
 Data sources (none need an API key):
 
