@@ -7,9 +7,14 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 const MAPS_URL: &str = "https://api.rainviewer.com/public/weather-maps.json";
+/// The only tile host we fetch from, whatever the index says.
+const TILE_HOST: &str = "https://tilecache.rainviewer.com";
 pub const TILE: usize = 256;
 /// RainViewer serves a "Zoom Level Not Supported" image above this.
 pub const MAX_ZOOM: u8 = 7;
+
+/// Web Mercator can't show the poles; views are centered no further out than this.
+pub const MAX_LAT: f64 = 85.0;
 
 /// Selectable view widths, widest first.
 pub const ZOOM_KM: [f64; 5] = [2400.0, 1200.0, 600.0, 300.0, 150.0];
@@ -60,13 +65,26 @@ pub fn fetch_frames() -> Result<Frames> {
         .error_for_status()?
         .json()
         .context("bad radar index")?;
-    if raw.radar.past.is_empty() {
+    if raw.host != TILE_HOST {
+        bail!("unexpected radar tile host {:?}", raw.host);
+    }
+    // Drop anything that isn't a plain "/v2/radar/<id>" path, since it's spliced into tile URLs.
+    let frames: Vec<RadarFrame> = raw
+        .radar
+        .past
+        .into_iter()
+        .filter(|f| valid_path(&f.path))
+        .map(|f| RadarFrame { time: f.time, path: f.path })
+        .collect();
+    if frames.is_empty() {
         bail!("no radar frames available");
     }
-    Ok(Frames {
-        host: raw.host,
-        frames: raw.radar.past.into_iter().map(|f| RadarFrame { time: f.time, path: f.path }).collect(),
-    })
+    Ok(Frames { host: raw.host, frames })
+}
+
+fn valid_path(path: &str) -> bool {
+    path.strip_prefix("/v2/radar/")
+        .is_some_and(|id| !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -195,6 +213,8 @@ impl View {
     pub fn new(lon: f64, lat: f64, km: f64, dots_w: usize, dots_h: usize) -> View {
         let dots_w = dots_w.max(1);
         let dots_h = dots_h.max(1);
+        // At ±90° the scale factor is 0 and the view would be infinitely wide.
+        let lat = lat.clamp(-MAX_LAT, MAX_LAT);
         let m_per_px_z0 = 156_543.034 * lat.to_radians().cos();
         // Lowest zoom whose pixels are at least as fine as the dots, capped at MAX_ZOOM.
         let want = (dots_w as f64 * m_per_px_z0 / (km * 1000.0)).log2().ceil();
@@ -224,7 +244,9 @@ impl View {
     pub fn tiles(&self) -> Vec<(u32, u32)> {
         let n = 1i64 << self.z;
         let t = TILE as f64;
-        let (x0, x1) = ((self.left / t).floor() as i64, ((self.left + self.width_px()) / t).floor() as i64);
+        let x0 = (self.left / t).floor() as i64;
+        // A view wider than the world still only needs each column of tiles once.
+        let x1 = (((self.left + self.width_px()) / t).floor() as i64).min(x0 + n - 1);
         let (y0, y1) = ((self.top / t).floor() as i64, ((self.top + self.height_px()) / t).floor() as i64);
         let mut out = Vec::new();
         for y in y0.max(0)..=y1.min(n - 1) {
@@ -289,6 +311,24 @@ mod tests {
         assert_eq!(classify(0xff, 0xee, 0x00, 255), 4); // yellow
         assert_eq!(classify(0xff, 0x30, 0x00, 255), 5); // red
         assert_eq!(classify(0xc0, 0x00, 0xc0, 255), 6); // purple
+    }
+
+    #[test]
+    fn view_is_bounded_at_the_poles() {
+        for lat in [90.0, -90.0, 89.99] {
+            let v = View::new(0.0, lat, 2400.0, 400, 200);
+            assert!(v.width_px().is_finite());
+            assert!(v.tiles().len() <= 1 << (2 * v.z as usize));
+        }
+    }
+
+    #[test]
+    fn only_plain_frame_paths_are_accepted() {
+        assert!(valid_path("/v2/radar/321e19982727"));
+        assert!(!valid_path("/v2/radar/"));
+        assert!(!valid_path("/v2/radar/../../x"));
+        assert!(!valid_path("/v2/radar/abc?x=1"));
+        assert!(!valid_path("https://evil.example/v2/radar/abc"));
     }
 
     #[test]

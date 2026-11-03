@@ -67,7 +67,15 @@ fn parse_args() -> Result<Args> {
         }
     }
     let location = match (lat, lon, name) {
-        (Some(a), Some(o), _) => Location::Coords(a, o),
+        (Some(a), Some(o), _) => {
+            if !(-90.0..=90.0).contains(&a) {
+                bail!("--lat must be between -90 and 90");
+            }
+            if !(-180.0..=180.0).contains(&o) {
+                bail!("--lon must be between -180 and 180");
+            }
+            Location::Coords(a, o)
+        }
         (None, None, n) => Location::Name(n.unwrap_or_else(|| DEFAULT_LOCATION.into())),
         _ => bail!("--lat and --lon must be given together"),
     };
