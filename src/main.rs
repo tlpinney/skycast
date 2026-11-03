@@ -20,6 +20,19 @@ use api::{Forecast, Place, Units};
 
 const DEFAULT_LOCATION: &str = "Herndon, VA";
 const AUTO_REFRESH: Duration = Duration::from_secs(15 * 60);
+/// After a failed fetch, try again this soon instead of waiting for the next refresh.
+const ERROR_RETRY: Duration = Duration::from_secs(60);
+/// Pauses before quick retries of a temporary failure (5xx, timeout, no connection).
+const TRANSIENT_RETRIES: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
+
+/// Worth retrying soon: the server hiccuped or the network did, rather than a bad request.
+fn transient(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<reqwest::Error>().is_some_and(|r| {
+            r.is_timeout() || r.is_connect() || r.status().is_some_and(|s| s.is_server_error())
+        })
+    })
+}
 
 const USAGE: &str = "\
 weather - today's forecast in the terminal
@@ -318,8 +331,17 @@ fn spawn_worker(location: Location, units: Units) -> (mpsc::Sender<()>, mpsc::Re
                         p
                     }
                 };
-                let f = api::fetch_today(&p, units)?;
-                Ok((p, f))
+                let mut result = api::fetch_today(&p, units);
+                for pause in TRANSIENT_RETRIES {
+                    match &result {
+                        Err(e) if transient(e) => {
+                            thread::sleep(pause);
+                            result = api::fetch_today(&p, units);
+                        }
+                        _ => break,
+                    }
+                }
+                Ok((p, result?))
             })();
             if res_tx.send(result.map_err(|e| format!("{e:#}"))).is_err() {
                 break;
@@ -439,7 +461,8 @@ fn main() -> Result<()> {
                     }
                 }
 
-            if !app.fetching && last_request.elapsed() >= AUTO_REFRESH {
+            let interval = if matches!(app.status, Status::Error(_)) { ERROR_RETRY } else { AUTO_REFRESH };
+            if !app.fetching && last_request.elapsed() >= interval {
                 app.fetching = true;
                 req_tx.send(())?;
                 last_request = Instant::now();

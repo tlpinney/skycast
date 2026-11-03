@@ -117,7 +117,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Screen::Radar => draw_radar(f, body, app),
         },
         (None, Status::Error(e)) => {
-            let p = Paragraph::new(format!("Couldn't load the forecast:\n\n{e}\n\nPress r to retry."))
+            let p = Paragraph::new(format!("Couldn't load the forecast:\n\n{e}\n\nRetrying in a minute, or press r to retry now."))
                 .red()
                 .wrap(Wrap { trim: true })
                 .block(panel("Error"));
