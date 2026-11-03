@@ -37,9 +37,9 @@ fn transient(e: &anyhow::Error) -> bool {
 }
 
 const USAGE: &str = "\
-weather - today's forecast in the terminal
+skycast - weather, radar, sun, moon and tides in the terminal
 
-Usage: weather [OPTIONS]
+Usage: skycast [OPTIONS]
 
 Options:
   -l, --location <NAME>   City, optionally with state or country (default: \"Herndon, VA\")

@@ -67,7 +67,7 @@ impl Tides {
 
 fn client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
-        .user_agent("weather-tui/0.1")
+        .user_agent("skycast/0.1")
         .timeout(std::time::Duration::from_secs(30))
         .build()?)
 }
@@ -110,7 +110,7 @@ fn cache_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("weather-tui").join("noaa-tide-stations.json"))
+    Some(base.join("skycast").join("noaa-tide-stations.json"))
 }
 
 /// NOAA's tide prediction stations, cached for a month (the full list is ~2 MB).
@@ -193,7 +193,7 @@ fn fetch_noaa(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Ti
         .get(NOAA_DATA_URL)
         .query(&[
             ("product", "predictions"),
-            ("application", "weather-tui"),
+            ("application", "skycast"),
             ("begin_date", &begin.format("%Y%m%d").to_string()),
             ("range", "96"),
             ("datum", "MLLW"),

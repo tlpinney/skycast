@@ -2158,6 +2158,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
+name = "skycast"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "png",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2731,19 +2744,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b1f9c3798725016c6ee5f2f57869ec0831e8bbc0ab0310a86e787e97f41389e"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "weather"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "png",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
 ]
 
 [[package]]

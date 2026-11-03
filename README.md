@@ -1,4 +1,4 @@
-# weather
+# skycast
 
 A terminal weather widget built with [ratatui](https://ratatui.rs), sized to sit in a
 terminal pane alongside your work. Five screens:
@@ -32,19 +32,27 @@ Data sources (none need an API key):
 - Tides: [NOAA CO-OPS](https://tidesandcurrents.noaa.gov/web_services_info.html) predictions from
   the nearest station within 80 km (US coasts), otherwise the
   [Open-Meteo marine model](https://open-meteo.com/en/docs/marine-weather-api) at the nearest sea
-  grid point within 50 km. NOAA's station list is cached in `~/.cache/weather-tui/` for a month.
+  grid point within 50 km. NOAA's station list is cached in `~/.cache/skycast/` for a month.
 - Sun and moon: computed locally (NOAA solar equations, Meeus lunar longitude), no network
 - Map outlines: [Natural Earth](https://www.naturalearthdata.com/) 1:50m (public domain), converted
   to `assets/*.bin` by `tools/ne2bin.py`
 
-## Running the widget
+## Install
 
 ```sh
-cargo run --release                         # Herndon, VA, °F
-cargo run --release -- -l "Paris"           # any place name
-cargo run --release -- -l "Portland, OR"    # "City, ST" or "City, Country"
-cargo run --release -- --lat 38.97 --lon -77.39 --metric
+cargo install --git https://github.com/tlpinney/skycast
 ```
+
+## Usage
+
+```sh
+skycast                                 # Herndon, VA, °F
+skycast -l "Paris"                      # any place name
+skycast -l "Portland, OR"               # "City, ST" or "City, Country"
+skycast --lat 38.97 --lon -77.39 --metric
+```
+
+From a checkout, `cargo run --release -- <options>` does the same.
 
 Keys:
 

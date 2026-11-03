@@ -53,7 +53,7 @@ struct RawFrame {
 
 fn client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
-        .user_agent("weather-tui/0.1")
+        .user_agent("skycast/0.1")
         .timeout(std::time::Duration::from_secs(15))
         .build()?)
 }
