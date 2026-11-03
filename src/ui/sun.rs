@@ -16,6 +16,7 @@ use crate::solar::{self, Crossing, SunDay};
 
 const SUN: Color = Color::Yellow;
 const NIGHT: Color = Color::Indexed(61); // muted blue
+const MOON: Color = Color::Indexed(252); // pale gray
 
 fn dim(s: impl Into<String>) -> Span<'static> {
     Span::styled(s.into(), Style::new().dark_gray())
@@ -60,7 +61,8 @@ pub fn draw(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place) {
     let yesterday = solar::sun_day(today - Duration::days(1), place.lat, place.lon, fc.utc_offset_secs);
 
     if area.height < 10 {
-        draw_compact(f, area, &day, &yesterday);
+        let moon = solar::moon_day(today, place.lat, place.lon, fc.utc_offset_secs);
+        draw_compact(f, area, &day, &yesterday, moon);
         return;
     }
 
@@ -76,7 +78,7 @@ pub fn draw(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place) {
             .areas(area);
     let [sun, moon] = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)]).areas(top);
     draw_sun_panel(f, sun, fc, place, &day, &yesterday, now);
-    draw_moon_panel(f, moon, fc);
+    draw_moon_panel(f, moon, fc, place, today);
     if path_h > 0 {
         draw_path(f, path, fc, place, &day, now);
     }
@@ -154,8 +156,16 @@ fn draw_sun_panel(
     f.render_widget(Paragraph::new(lines).block(panel("Sun")), area);
 }
 
-fn draw_moon_panel(f: &mut Frame, area: Rect, fc: &Forecast) {
+fn draw_moon_panel(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: NaiveDate) {
     let m = solar::moon_phase(Utc::now());
+    let md = solar::moon_day(today, place.lat, place.lon, fc.utc_offset_secs);
+    // A day without a rise (or set) happens about once a month; say so instead of a dash.
+    let rise_set = Line::from(vec![
+        dim("Rise "),
+        Span::styled(md.rise.map_or("none today".into(), |t| clock(Some(t))), Style::new().fg(MOON)),
+        dim("   Set "),
+        Span::styled(md.set.map_or("none today".into(), |t| clock(Some(t))), Style::new().fg(MOON)),
+    ]);
     let local = |t: chrono::DateTime<Utc>| {
         (t + Duration::seconds(fc.utc_offset_secs as i64)).naive_utc().format("%a %b %-d, %-I:%M %p").to_string()
     };
@@ -168,6 +178,7 @@ fn draw_moon_panel(f: &mut Frame, area: Rect, fc: &Forecast) {
             dim(" illuminated"),
         ]),
         Line::from(dim(format!("Day {:.0} of {:.1}", m.phase * solar::synodic_month(), solar::synodic_month()))),
+        rise_set,
         Line::raw(""),
         Line::from(vec![dim(format!("{}  ", next[0].0)), Span::raw(local(next[0].1))]),
         Line::from(vec![dim(format!("{}  ", next[1].0)), Span::raw(local(next[1].1))]),
@@ -202,8 +213,20 @@ fn draw_path(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, day: &SunD
         })
         .collect();
     let lo = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).min(-20.0).floor();
-    let hi = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).max(10.0).ceil() + 5.0;
+    let sun_hi = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
     let runs = split_by_horizon(&points);
+    // The moon's path too, faint, only while it's up.
+    let moon_points: Vec<(f64, f64)> = (0..=144)
+        .map(|k| {
+            let t = midnight + Duration::minutes(10 * k);
+            (k as f64 / 6.0, solar::moon_altitude(to_utc(fc, t), place.lat, place.lon))
+        })
+        .collect();
+    let moon_runs: Vec<Vec<(f64, f64)>> =
+        split_by_horizon(&moon_points).into_iter().filter(|(up, _)| *up).map(|(_, r)| r).collect();
+    // Tall enough for whichever climbs higher today.
+    let moon_hi = moon_points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    let hi = sun_hi.max(moon_hi).max(10.0).ceil() + 5.0;
     let horizon = [(0.0, 0.0), (24.0, 0.0)];
     let now_x = now.hour() as f64 + now.minute() as f64 / 60.0;
     let now_elev = solar::sun_position(to_utc(fc, now), place.lat, place.lon).elevation;
@@ -216,6 +239,11 @@ fn draw_path(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, day: &SunD
             .style(Style::new().fg(Color::Indexed(240)))
             .data(&horizon),
     ];
+    for run in &moon_runs {
+        datasets.push(
+            Dataset::default().marker(Marker::Braille).graph_type(GraphType::Line).style(Style::new().fg(MOON)).data(run),
+        );
+    }
     for (up, run) in &runs {
         datasets.push(
             Dataset::default()
@@ -234,8 +262,10 @@ fn draw_path(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, day: &SunD
     );
 
     let title = Line::from(vec![
-        Span::styled(" Sun path today ", Style::new().bold()),
+        Span::styled(" Sun and moon today ", Style::new().bold()),
         dim(format!("noon {:.0}° · ", day.noon_elevation)),
+        Span::styled("━", Style::new().fg(MOON)),
+        dim(" moon · "),
         Span::styled("█", Style::new().fg(SUN)),
         dim(" now "),
     ]);
@@ -308,8 +338,9 @@ fn draw_year(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: Nai
     draw_x_labels(f, inner, &y_labels, bounds, &ticks);
 }
 
-fn draw_compact(f: &mut Frame, area: Rect, day: &SunDay, yesterday: &SunDay) {
+fn draw_compact(f: &mut Frame, area: Rect, day: &SunDay, yesterday: &SunDay, moon: solar::MoonDay) {
     let m = solar::moon_phase(Utc::now());
+    let t = |o: Option<NaiveDateTime>| o.map_or("—".into(), |t| t.format("%-I:%M%P").to_string());
     let mut lines = vec![
         Line::from(vec![
             Span::styled(" ☀ ", Style::new().fg(SUN)),
@@ -320,7 +351,10 @@ fn draw_compact(f: &mut Frame, area: Rect, day: &SunDay, yesterday: &SunDay) {
             }),
         ]),
         Line::from(vec![dim(" Solar noon "), Span::raw(clock(Some(day.noon))), dim(format!(", {:.0}°", day.noon_elevation))]),
-        Line::from(vec![Span::raw(format!(" {} {}", m.icon, m.name)), dim(format!(" · {:.0}% lit", m.illumination * 100.0))]),
+        Line::from(vec![
+            Span::raw(format!(" {} {}", m.icon, m.name)),
+            dim(format!(" · {:.0}% lit · rise {} set {}", m.illumination * 100.0, t(moon.rise), t(moon.set))),
+        ]),
     ];
     lines.truncate(area.height as usize);
     f.render_widget(Paragraph::new(lines), area);

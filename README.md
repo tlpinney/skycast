@@ -9,8 +9,8 @@ A terminal weather widget built with [ratatui](https://ratatui.rs), meant to sit
 - **Radar**: the last two hours of precipitation radar drawn in Braille over coastlines and
   state/country borders, with zoom and animation.
 - **Sun**: sunrise and sunset, day length and its change since yesterday, solar noon, golden
-  hour and the three twilights; the moon's phase and the next new and full moon; the sun's
-  path through today and daylight through the year.
+  hour and the three twilights; the moon's phase, moonrise and moonset, and the next new and
+  full moon; the sun's and moon's paths through today and daylight through the year.
 - **Tides**: the current level and whether it's rising or falling, the next high and low,
   a two-day tide curve and a high/low table.
 

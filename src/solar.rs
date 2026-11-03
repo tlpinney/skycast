@@ -157,14 +157,21 @@ pub fn sun_day(date: NaiveDate, lat: f64, lon: f64, utc_offset_secs: i32) -> Sun
     }
 }
 
-/// The moon's apparent ecliptic longitude in degrees (main periodic terms only).
+/// The moon's fundamental arguments (degrees): mean longitude L′, mean elongation D,
+/// sun's mean anomaly M, moon's mean anomaly M′ and argument of latitude F.
+fn moon_args(t: f64) -> (f64, f64, f64, f64, f64) {
+    (
+        218.316_4 + 481_267.881_23 * t,
+        297.850_2 + 445_267.111_5 * t,
+        357.529_1 + 35_999.050_3 * t,
+        134.963_4 + 477_198.867_6 * t,
+        93.272_1 + 483_202.017_5 * t,
+    )
+}
+
+/// The moon's ecliptic longitude in degrees (main periodic terms only).
 fn moon_longitude(utc: DateTime<Utc>) -> f64 {
-    let t = century(utc);
-    let l = 218.316_4 + 481_267.881_23 * t;
-    let d = 297.850_2 + 445_267.111_5 * t;
-    let m = 357.529_1 + 35_999.050_3 * t;
-    let mp = 134.963_4 + 477_198.867_6 * t;
-    let f = 93.272_1 + 483_202.017_5 * t;
+    let (l, d, m, mp, f) = moon_args(century(utc));
     let lon = l + 6.288_774 * sin_d(mp) + 1.274_027 * sin_d(2.0 * d - mp) + 0.658_314 * sin_d(2.0 * d)
         + 0.213_618 * sin_d(2.0 * mp)
         - 0.185_116 * sin_d(m)
@@ -177,6 +184,91 @@ fn moon_longitude(utc: DateTime<Utc>) -> f64 {
         - 0.034_720 * sin_d(d)
         - 0.030_383 * sin_d(m + mp);
     lon.rem_euclid(360.0)
+}
+
+/// The moon's ecliptic latitude (degrees) and distance from Earth's center (km).
+fn moon_latitude_distance(utc: DateTime<Utc>) -> (f64, f64) {
+    let (_, d, m, mp, f) = moon_args(century(utc));
+    let beta = 5.128_122 * sin_d(f) + 0.280_602 * sin_d(mp + f) + 0.277_693 * sin_d(mp - f)
+        + 0.173_237 * sin_d(2.0 * d - f)
+        + 0.055_413 * sin_d(2.0 * d - mp + f)
+        + 0.046_271 * sin_d(2.0 * d - mp - f)
+        + 0.032_573 * sin_d(2.0 * d + f)
+        + 0.017_198 * sin_d(2.0 * mp + f)
+        + 0.009_266 * sin_d(2.0 * d + mp - f)
+        + 0.008_822 * sin_d(2.0 * mp - f);
+    let dist = 385_000.56 - 20_905.355 * cos_d(mp) - 3_699.111 * cos_d(2.0 * d - mp) - 2_955.968 * cos_d(2.0 * d)
+        - 569.925 * cos_d(2.0 * mp)
+        + 48.888 * cos_d(m)
+        - 3.149 * cos_d(2.0 * f)
+        + 246.158 * cos_d(2.0 * d - 2.0 * mp)
+        - 152.138 * cos_d(2.0 * d - m - mp)
+        - 170.733 * cos_d(2.0 * d + mp)
+        - 204.586 * cos_d(2.0 * d - m)
+        - 129.620 * cos_d(m - mp)
+        + 108.743 * cos_d(d)
+        + 104.755 * cos_d(m + mp);
+    (beta, dist)
+}
+
+/// Greenwich mean sidereal time, degrees.
+fn sidereal_deg(utc: DateTime<Utc>) -> f64 {
+    let jd = julian_day(utc);
+    let t = (jd - 2_451_545.0) / 36_525.0;
+    (280.460_618_37 + 360.985_647_366_29 * (jd - 2_451_545.0) + 0.000_387_933 * t * t - t * t * t / 38_710_000.0)
+        .rem_euclid(360.0)
+}
+
+/// How far the moon's upper limb is above the horizon, in degrees, accounting for parallax,
+/// the moon's semi-diameter and refraction. Zero is moonrise/moonset.
+pub fn moon_altitude(utc: DateTime<Utc>, lat: f64, lon: f64) -> f64 {
+    let lambda = moon_longitude(utc);
+    let (beta, dist) = moon_latitude_distance(utc);
+    let eps = 23.439_291 - 0.013_004_2 * century(utc);
+    let ra = (sin_d(lambda) * cos_d(eps) - beta.to_radians().tan() * sin_d(eps)).atan2(cos_d(lambda)).to_degrees();
+    let dec = (sin_d(beta) * cos_d(eps) + cos_d(beta) * sin_d(eps) * sin_d(lambda)).asin().to_degrees();
+    let hour_angle = sidereal_deg(utc) + lon - ra;
+    let alt = (sin_d(lat) * sin_d(dec) + cos_d(lat) * cos_d(dec) * cos_d(hour_angle)).asin().to_degrees();
+    // Standard altitude for moonrise (Meeus ch. 15): 0.7275·parallax − 0°34′.
+    let parallax = (6_378.14 / dist).asin().to_degrees();
+    alt - (0.7275 * parallax - 0.5667)
+}
+
+/// Moonrise and moonset on a local calendar date. Either can be missing: the moon rises
+/// about 50 minutes later each day, so roughly once a month a day has no rise (or no set).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoonDay {
+    pub rise: Option<NaiveDateTime>,
+    pub set: Option<NaiveDateTime>,
+}
+
+pub fn moon_day(date: NaiveDate, lat: f64, lon: f64, utc_offset_secs: i32) -> MoonDay {
+    let offset = Duration::seconds(utc_offset_secs as i64);
+    let start = date.and_time(NaiveTime::MIN);
+    let alt = |local: NaiveDateTime| moon_altitude((local - offset).and_utc(), lat, lon);
+    let step = Duration::minutes(10);
+    let (mut rise, mut set) = (None, None);
+    let mut t = start;
+    let mut a = alt(t);
+    while t < start + Duration::days(1) {
+        let next = t + step;
+        let b = alt(next);
+        if (a < 0.0) != (b < 0.0) {
+            // Narrow the crossing down to a few seconds.
+            let (mut lo, mut hi) = (t, next);
+            for _ in 0..8 {
+                let mid = lo + (hi - lo) / 2;
+                if (alt(mid) < 0.0) == (a < 0.0) { lo = mid } else { hi = mid }
+            }
+            let when = lo + (hi - lo) / 2;
+            if when.date() == date {
+                if a < 0.0 { rise = rise.or(Some(when)) } else { set = set.or(Some(when)) }
+            }
+        }
+        t = next;
+        a = b;
+    }
+    MoonDay { rise, set }
 }
 
 /// Moon minus sun longitude, 0..360: 0 new, 90 first quarter, 180 full, 270 last quarter.
@@ -308,6 +400,33 @@ mod tests {
         assert!((p.azimuth - 180.0).abs() < 2.0, "azimuth {}", p.azimuth);
         let morning = sun_position(noon_utc - Duration::hours(3), 38.96955, -77.3861);
         assert!(morning.azimuth < 180.0 && morning.elevation < p.elevation);
+    }
+
+    #[test]
+    fn moonrise_and_moonset_match_usno() {
+        // US Naval Observatory one-day tables.
+        let cases = [
+            ((2026, 11, 3), 38.96955, -77.3861, -5, "00:43", "14:15"),
+            ((2026, 11, 10), 38.96955, -77.3861, -5, "08:19", "17:32"),
+            ((2026, 11, 4), -33.87, 151.21, 11, "02:53", "14:30"),
+            ((2024, 4, 8), 38.96955, -77.3861, -4, "06:37", "19:52"),
+        ];
+        for ((y, m, d), lat, lon, tz, rise, set) in cases {
+            let date = NaiveDate::from_ymd_opt(y, m, d).unwrap();
+            let md = moon_day(date, lat, lon, tz * 3600);
+            assert!(close(md.rise, rise, 3), "{date} rise {} (USNO {rise})", hm(md.rise));
+            assert!(close(md.set, set, 3), "{date} set {} (USNO {set})", hm(md.set));
+        }
+    }
+
+    #[test]
+    fn some_day_each_month_has_no_moonrise() {
+        // The moon rises ~50 min later each day, so over a lunar month one day is skipped.
+        let start = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let missing = (0..30)
+            .filter(|i| moon_day(start + Duration::days(*i), 38.96955, -77.3861, -18_000).rise.is_none())
+            .count();
+        assert_eq!(missing, 1);
     }
 
     #[test]
