@@ -6,6 +6,14 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Data source credits: `?` opens a Sources screen with each source's credit, link and
+  terms (Open-Meteo, Copernicus CAMS and Marine, NOAA, the National Weather Service,
+  RainViewer, Natural Earth), and the footer credits the source of the current screen.
+  On narrow panes the footer drops key hints before the credit.
+- The README has a "Data sources and attribution" table.
+
 ## [0.1.0-alpha.3] - 2026-11-03
 
 The third alpha: the first macOS binary. From crates.io:

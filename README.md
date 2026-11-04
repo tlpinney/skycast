@@ -26,18 +26,26 @@ and at 1–3 rows the whole widget becomes a strip with no header or footer, e.g
  now ☾63°  7p ☾62°  8p ☾61°  9p ☾59°  10p ☾58°  11p ☾58°
 ```
 
-Data sources (none need an API key):
+## Data sources and attribution
 
-- Forecast, geocoding and air quality: [Open-Meteo](https://open-meteo.com/)
-- Weather alerts (US only): [National Weather Service](https://www.weather.gov/documentation/services-web-api)
-- Radar: [RainViewer](https://www.rainviewer.com/api.html)
-- Tides: [NOAA CO-OPS](https://tidesandcurrents.noaa.gov/web_services_info.html) predictions from
-  the nearest station within 80 km (US coasts), otherwise the
-  [Open-Meteo marine model](https://open-meteo.com/en/docs/marine-weather-api) at the nearest sea
-  grid point within 50 km. NOAA's station list is cached in `~/.cache/skycast/` for a month.
-- Sun and moon: computed locally (NOAA solar equations, Meeus lunar longitude), no network
-- Map outlines: [Natural Earth](https://www.naturalearthdata.com/) 1:50m (public domain), converted
-  to `assets/*.bin` by `tools/ne2bin.py`
+None of these need an API key. In skycast, `?` lists them with their credits, and the
+footer credits the source of the screen you're on.
+
+| Data | Source | Credit and terms |
+|---|---|---|
+| Forecast, place search | [Open-Meteo](https://open-meteo.com) | Weather data by Open-Meteo.com, [CC BY 4.0](https://open-meteo.com/en/licence) |
+| Air quality | [Copernicus Atmosphere Monitoring Service](https://atmosphere.copernicus.eu), via Open-Meteo | Contains modified Copernicus Atmosphere Monitoring Service information |
+| Tides, outside the US | [Copernicus Marine Service](https://marine.copernicus.eu), via the [Open-Meteo marine API](https://open-meteo.com/en/docs/marine-weather-api) | Generated using E.U. Copernicus Marine Service Information |
+| Tides, US coasts | [NOAA Tides & Currents](https://tidesandcurrents.noaa.gov) (CO-OPS) | US public domain |
+| Weather alerts, US | [National Weather Service](https://www.weather.gov) | US public domain |
+| Radar | [RainViewer](https://www.rainviewer.com) | RainViewer's API is free for personal and educational use |
+| Map outlines | [Natural Earth](https://www.naturalearthdata.com) 1:50m | Public domain |
+| Sun and moon | Computed locally (NOAA solar equations; Meeus, *Astronomical Algorithms*) | No network |
+
+Tides come from the nearest NOAA station within 80 km, otherwise from the nearest sea
+point in Open-Meteo's marine model within 50 km. NOAA's station list is cached in
+`~/.cache/skycast/` for a month. The map outlines are converted to `assets/*.bin` by
+`tools/ne2bin.py`.
 
 ## Install
 

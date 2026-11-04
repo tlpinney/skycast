@@ -19,6 +19,7 @@ use crate::{App, Screen, Status};
 
 mod compact;
 mod search;
+mod sources;
 mod sun;
 mod tide;
 
@@ -196,6 +197,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_alerts {
         draw_alert_popup(f, area, forecast, app.alert_scroll);
     }
+    if app.show_sources {
+        sources::draw(f, area, app.sources_scroll);
+    }
     if app.search.open {
         search::draw(f, area, &app.search);
     }
@@ -290,6 +294,7 @@ fn draw_alert_popup(f: &mut Frame, area: Rect, fc: Option<&Forecast>, scroll: u1
         .border_style(Style::new().yellow())
         .padding(Padding::horizontal(1))
         .title(Span::styled(" Weather alerts ", Style::new().bold()))
+        .title(Line::styled(" National Weather Service ", dim).right_aligned())
         .title_bottom(Line::styled(" ↑↓ scroll · a / Esc close ", dim).right_aligned());
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((scroll, 0)).block(block);
     f.render_widget(p, popup);
@@ -326,16 +331,38 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let keys: &[(&str, &str)] = if app.screen == Screen::Radar {
-        &[("tab", "switch"), ("+/-", "zoom"), ("space", "play"), ("q", "quit")]
-    } else {
-        &[("tab", "switch"), ("l", "location"), ("r", "refresh"), ("q", "quit")]
+    // Credit the source of what's on screen (the full credits are on `?`).
+    let credit = match app.screen {
+        Screen::Today => "Open-Meteo · CAMS",
+        Screen::Week => "Open-Meteo",
+        Screen::Radar => "RainViewer",
+        Screen::Sun => "computed locally",
+        Screen::Tides => match &app.tides.data {
+            Some(Some(t)) if t.source == "NOAA" => "NOAA",
+            Some(Some(_)) => "Open-Meteo · Copernicus Marine",
+            _ => "",
+        },
     };
-    let mut spans = vec![Span::raw(" ")];
-    for (k, what) in keys {
-        spans.push(Span::styled(*k, Style::new().bold()));
-        spans.push(Span::raw(format!(" {what}  ")));
+    let mut keys: Vec<(&str, &str)> = if app.screen == Screen::Radar {
+        vec![("tab", "switch"), ("+/-", "zoom"), ("space", "play"), ("?", "sources"), ("q", "quit")]
+    } else {
+        vec![("tab", "switch"), ("l", "place"), ("r", "refresh"), ("?", "sources"), ("q", "quit")]
+    };
+    let hints = |keys: &[(&str, &str)]| -> Vec<Span<'static>> {
+        let mut spans = vec![Span::raw(" ")];
+        for (k, what) in keys {
+            spans.push(Span::styled(k.to_string(), Style::new().bold()));
+            spans.push(Span::raw(format!(" {what}  ")));
+        }
+        spans
+    };
+    // On narrow panes the credit must still fit: drop key hints, "tab switch" first (the
+    // tabs are in the header anyway).
+    let credit_w = credit.chars().count() as u16 + 1;
+    while keys.len() > 1 && Line::from(hints(&keys)).width() as u16 + credit_w > area.width {
+        keys.remove(0);
     }
+    let spans = hints(&keys);
     let keys_w = Line::from(spans.clone()).width() as u16;
     let status = if let Some(n) = &app.notice {
         Span::styled(format!("{n} "), Style::new().yellow())
@@ -348,9 +375,20 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     } else {
         Span::raw("")
     };
-    let [keys, right] = Layout::horizontal([Constraint::Length(keys_w), Constraint::Fill(1)]).areas(area);
-    f.render_widget(Line::from(spans).dark_gray(), keys);
-    f.render_widget(Line::from(status).alignment(Alignment::Right), right);
+    let [keys_area, right] = Layout::horizontal([Constraint::Length(keys_w), Constraint::Fill(1)]).areas(area);
+    // When it doesn't all fit: an error or notice wins (it needs seeing), otherwise the credit
+    // stays and the "updated" time goes.
+    let important = app.notice.is_some() || app.fetching || matches!(app.status, Status::Error(_));
+    let full = Line::from(vec![Span::styled(format!("{credit} · "), Style::new().dark_gray()), status.clone()]);
+    let line = if credit.is_empty() || (important && full.width() > right.width as usize) {
+        Line::from(status)
+    } else if full.width() <= right.width as usize {
+        full
+    } else {
+        Line::styled(format!("{credit} "), Style::new().dark_gray())
+    };
+    f.render_widget(Line::from(spans).dark_gray(), keys_area);
+    f.render_widget(line.alignment(Alignment::Right), right);
 }
 
 fn draw_today(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {

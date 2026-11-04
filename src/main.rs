@@ -54,7 +54,7 @@ With neither, skycast uses your saved location, or asks for one the first time.
 Press l to search for a different place; the one you choose is saved.
 
 Keys: Tab / ←→ switch screens (1 Today, 2 7 days, 3 Radar, 4 Sun, 5 Tides), a alerts,
-      l change location, r refresh, q / Esc quit
+      l change location, r refresh, ? data sources, q / Esc quit
 Radar: + / - zoom, space play/pause the last two hours, , / . step one scan";
 
 enum Location {
@@ -399,6 +399,9 @@ pub struct App {
     pub tides: TideState,
     /// Alert details popup.
     pub show_alerts: bool,
+    /// The data sources popup, and how far it's scrolled.
+    pub show_sources: bool,
+    pub sources_scroll: u16,
     pub alert_scroll: u16,
     pub place: Option<Place>,
     pub units: Units,
@@ -489,6 +492,8 @@ fn main() -> Result<()> {
         radar: RadarState::new(),
         tides: TideState::default(),
         show_alerts: false,
+        show_sources: false,
+        sources_scroll: 0,
         alert_scroll: 0,
         place: place.clone(),
         units: args.units,
@@ -596,6 +601,17 @@ fn main() -> Result<()> {
                         }
                         continue;
                     }
+                    if app.show_sources {
+                        match k.code {
+                            KeyCode::Char('?') | KeyCode::Esc => app.show_sources = false,
+                            KeyCode::Char('q') => break,
+                            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
+                            KeyCode::Down | KeyCode::Char('j') => app.sources_scroll += 1,
+                            KeyCode::Up | KeyCode::Char('k') => app.sources_scroll = app.sources_scroll.saturating_sub(1),
+                            _ => {}
+                        }
+                        continue;
+                    }
                     if app.show_alerts {
                         match k.code {
                             KeyCode::Char('a') | KeyCode::Esc => app.show_alerts = false,
@@ -618,6 +634,10 @@ fn main() -> Result<()> {
                         }
                         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
                         KeyCode::Char('l') | KeyCode::Char('/') => app.search.open_with("", None),
+                        KeyCode::Char('?') => {
+                            app.show_sources = true;
+                            app.sources_scroll = 0;
+                        }
                         KeyCode::Tab | KeyCode::Right => app.screen = app.screen.step(1),
                         KeyCode::BackTab | KeyCode::Left => app.screen = app.screen.step(-1),
                         KeyCode::Char('1') | KeyCode::Char('t') => app.screen = Screen::Today,
