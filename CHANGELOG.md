@@ -6,6 +6,11 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A macOS binary: one universal build for Apple silicon and Intel, signed with the
+  maintainer's Apple Developer ID and notarized by Apple.
+
 ## [0.1.0-alpha.2] - 2026-11-03
 
 The second alpha. From crates.io:

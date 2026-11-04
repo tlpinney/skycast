@@ -48,8 +48,8 @@ the version spelled out):
 cargo install skycast --version 0.1.0-alpha.2
 ```
 
-Linux binaries are on the [releases page](https://github.com/tlpinney/skycast/releases),
-with a signed checksum file.
+Binaries for Linux and macOS (signed with an Apple Developer ID and notarized) are on the
+[releases page](https://github.com/tlpinney/skycast/releases), with a signed checksum file.
 
 ## Usage
 

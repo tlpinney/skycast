@@ -22,6 +22,7 @@ cat <<NOTES
 | platform | file |
 |---|---|
 | Linux, x86-64 (glibc) | \`skycast-$version-x86_64-unknown-linux-gnu.tar.gz\` |
+| macOS, Apple silicon and Intel (signed and notarized) | \`skycast-$version-universal-apple-darwin.tar.gz\` |
 
 \`SHA256SUMS\` lists every archive's checksum, and \`SHA256SUMS.sig\` is the maintainer's SSH
 signature of it. The trusted key comes from the signing keys on the maintainer's GitHub
@@ -34,7 +35,7 @@ gh release download $tag --repo tlpinney/skycast
 gh api users/tlpinney/ssh_signing_keys --jq '.[].key | "tlpinney namespaces=\\"skycast-release\\" " + .' > allowed_signers
 ssh-keygen -Y verify -f allowed_signers -I tlpinney -n skycast-release -s SHA256SUMS.sig < SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing
-tar xzf skycast-$version-*.tar.gz
+tar xzf skycast-$version-universal-apple-darwin.tar.gz   # or the Linux archive
 \`\`\`
 
 Or build it with Cargo (Rust 1.89 or newer):
@@ -43,5 +44,6 @@ Or build it with Cargo (Rust 1.89 or newer):
 cargo install --git https://github.com/tlpinney/skycast --tag $tag
 \`\`\`
 
-macOS: install with Cargo (above) until there are notarized macOS binaries.
+The macOS binary is signed with the maintainer's Apple Developer ID (team \`7LATDFKMRT\`)
+and notarized by Apple; \`codesign -dv --verbose=2 skycast\` shows the signature.
 NOTES

@@ -25,3 +25,7 @@ signing key is published as a signing key on the maintainer's GitHub account
 (`https://api.github.com/users/tlpinney/ssh_signing_keys`), fingerprint
 `SHA256:LiOY0+3e/eOQFeUsG7iMovOBJui3yCAXXHlWz48c4uk`. Each release's notes show the
 commands to check it.
+
+The macOS binary is also signed with the maintainer's Apple Developer ID (team
+`7LATDFKMRT`) and notarized by Apple; `codesign -dv --verbose=2 skycast` shows the
+signature. CI builds it; the signing and notarization happen on the maintainer's Mac.
