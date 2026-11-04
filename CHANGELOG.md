@@ -6,17 +6,6 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- A location search: type a city and pick from the matches (`l` or `/` anytime). The
-  choice is saved in `~/.config/skycast/config.json` and used next time.
-
-### Changed
-
-- No built-in default location: the first run asks where you are. `--location` and
-  `--lat`/`--lon` still work, for that run only; a name that finds nothing opens the
-  search with it filled in.
-
 ## [0.1.0-alpha.2] - 2026-11-03
 
 The second alpha. From crates.io:
@@ -25,17 +14,22 @@ The second alpha. From crates.io:
 cargo install skycast --version 0.1.0-alpha.2
 ```
 
+### Added
+
+- A location search: type a city and pick from the matches (`l` or `/` anytime). The
+  choice is saved in `~/.config/skycast/config.json` and used next time.
+- A demo GIF in the README (`docs/demo.tape`, recorded with vhs).
+
 ### Changed
 
+- No built-in default location: the first run asks where you are. `--location` and
+  `--lat`/`--lon` still work, for that run only; a name that finds nothing opens the
+  search with it filled in.
 - Radar colors follow the most common precipitation level instead of the heaviest. One
   heavy pixel no longer colors a whole dot, and one heavy dot no longer colors a whole
   terminal cell, so moderate showers stop looking like downpours when zoomed out.
 - Releases go to crates.io from the release workflow (trusted publishing, after the
   maintainer approves), alongside the GitHub release.
-
-### Added
-
-- A demo GIF in the README (`docs/demo.tape`, recorded with vhs).
 
 ## [0.1.0-alpha.1] - 2026-11-03
 
