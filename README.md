@@ -49,14 +49,36 @@ point in Open-Meteo's marine model within 50 km. NOAA's station list is cached i
 
 ## Install
 
-From [crates.io](https://crates.io/crates/skycast):
+### Homebrew (macOS and Linux)
 
 ```sh
-cargo install skycast
+brew tap tlpinney/tap
+brew trust --formula tlpinney/tap/skycast
+brew install tlpinney/tap/skycast
 ```
 
-Binaries for Linux and macOS (signed with an Apple Developer ID and notarized) are on the
-[releases page](https://github.com/tlpinney/skycast/releases), with a signed checksum file.
+Homebrew asks you to trust formulas from taps outside Homebrew itself;
+`brew trust --formula` trusts just this one. On macOS and Linux ARM it builds from source
+(Homebrew installs Rust for the build); on Linux x86-64 it uses the release binary. Update
+with `brew upgrade skycast`.
+
+### Cargo
+
+From [crates.io](https://crates.io/crates/skycast), with Rust 1.89 or newer:
+
+```sh
+cargo install --locked skycast
+```
+
+`--locked` builds with the dependency versions skycast was tested with. Run the same
+command again to update.
+
+### Prebuilt binaries
+
+Linux x86-64 and macOS (one universal binary for Apple silicon and Intel, signed with an
+Apple Developer ID and notarized) are on the
+[releases page](https://github.com/tlpinney/skycast/releases), with a signed checksum
+file. Each release's notes show how to verify them.
 
 ## Usage
 
