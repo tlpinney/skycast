@@ -6,6 +6,17 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-03
+
+The first stable-numbered release, so plain Cargo commands find it (they skip
+pre-releases):
+
+```sh
+cargo install skycast
+```
+
+Pre-1.0, a minor version (0.2.0) may still change behavior or the config file.
+
 ### Added
 
 - Data source credits: `?` opens a Sources screen with each source's credit, link and
@@ -80,7 +91,8 @@ cargo install --git https://github.com/tlpinney/skycast --tag v0.1.0-alpha.1
 - Retries for temporary network failures.
 - Data from Open-Meteo, the National Weather Service, RainViewer and NOAA; no API keys.
 
-[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.3...HEAD
+[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.3...v0.1.0
 [0.1.0-alpha.3]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/tlpinney/skycast/releases/tag/v0.1.0-alpha.1

@@ -49,11 +49,10 @@ point in Open-Meteo's marine model within 50 km. NOAA's station list is cached i
 
 ## Install
 
-skycast is in alpha. From [crates.io](https://crates.io/crates/skycast) (pre-releases need
-the version spelled out):
+From [crates.io](https://crates.io/crates/skycast):
 
 ```sh
-cargo install skycast --version 0.1.0-alpha.3
+cargo install skycast
 ```
 
 Binaries for Linux and macOS (signed with an Apple Developer ID and notarized) are on the
