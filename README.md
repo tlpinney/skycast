@@ -16,8 +16,9 @@ brew install tlpinney/tap/skycast
 ```
 
 Homebrew asks you to trust formulas from taps outside Homebrew itself;
-`brew trust --formula` trusts just this one. On macOS and Linux ARM it builds from source
-(Homebrew installs Rust for the build); on Linux x86-64 it uses the release binary. Update
+`brew trust --formula` trusts just this one. On macOS it installs the release's universal
+binary, signed with an Apple Developer ID and notarized; on Linux x86-64, the release
+binary; on Linux ARM it builds from source (Homebrew installs Rust for the build). Update
 with `brew upgrade skycast`.
 
 ### Cargo
