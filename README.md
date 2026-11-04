@@ -1,5 +1,7 @@
 # skycast
 
+![skycast showing Miami: today's forecast, the radar, sun and moon, and tides](https://raw.githubusercontent.com/tlpinney/skycast/main/docs/demo.gif)
+
 A terminal weather widget built with [ratatui](https://ratatui.rs), sized to sit in a
 terminal pane alongside your work. Five screens:
 
@@ -39,12 +41,15 @@ Data sources (none need an API key):
 
 ## Install
 
+skycast is in alpha. From [crates.io](https://crates.io/crates/skycast) (pre-releases need
+the version spelled out):
+
 ```sh
-cargo install --git https://github.com/tlpinney/skycast --tag v0.1.0-alpha.1
+cargo install skycast --version 0.1.0-alpha.2
 ```
 
-skycast is in alpha: it isn't on crates.io yet. Linux binaries are on the
-[releases page](https://github.com/tlpinney/skycast/releases), with a signed checksum file.
+Linux binaries are on the [releases page](https://github.com/tlpinney/skycast/releases),
+with a signed checksum file.
 
 ## Usage
 

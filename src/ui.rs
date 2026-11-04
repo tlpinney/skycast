@@ -859,12 +859,24 @@ fn draw_radar(f: &mut Frame, area: Rect, app: &App) {
 
     // Canvas coordinates are Mercator pixels, with y flipped so north is up.
     let (left, top, s) = (view.left, view.top, view.px_per_dot);
+    let levels: Vec<u8> =
+        (0..view.dots_h).flat_map(|j| (0..view.dots_w).map(move |i| (i, j))).map(|(i, j)| view.sample(i, j, &lookup)).collect();
+    // A terminal cell holds 2×4 Braille dots but only one color. Give each cell the most
+    // common level among its dots, so one heavy dot doesn't color the whole cell.
     let mut by_level: Vec<Vec<(f64, f64)>> = vec![Vec::new(); 7];
-    for j in 0..view.dots_h {
-        for i in 0..view.dots_w {
-            let level = view.sample(i, j, &lookup);
-            if level > 0 {
-                by_level[level as usize].push((left + (i as f64 + 0.5) * s, -(top + (j as f64 + 0.5) * s)));
+    for cy in (0..view.dots_h).step_by(4) {
+        for cx in (0..view.dots_w).step_by(2) {
+            let dots: Vec<(usize, usize)> = (cy..(cy + 4).min(view.dots_h))
+                .flat_map(|j| (cx..(cx + 2).min(view.dots_w)).map(move |i| (i, j)))
+                .filter(|&(i, j)| levels[j * view.dots_w + i] > 0)
+                .collect();
+            let mut counts = [0u8; 7];
+            for &(i, j) in &dots {
+                counts[levels[j * view.dots_w + i] as usize] += 1;
+            }
+            let cell_level = radar::majority(&counts) as usize;
+            for (i, j) in dots {
+                by_level[cell_level].push((left + (i as f64 + 0.5) * s, -(top + (j as f64 + 0.5) * s)));
             }
         }
     }

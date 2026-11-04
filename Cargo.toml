@@ -1,6 +1,6 @@
 [package]
 name = "skycast"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 # The oldest Rust that builds it (the uuid dependency needs 1.89; skycast itself 1.88).
 rust-version = "1.89"
@@ -11,12 +11,9 @@ repository = "https://github.com/tlpinney/skycast"
 readme = "README.md"
 keywords = ["weather", "terminal", "tui", "ratatui", "radar"]
 categories = ["command-line-utilities"]
-# Alpha: never published to crates.io (cargo publish refuses). Install from git:
-#   cargo install --git https://github.com/tlpinney/skycast --tag v0.1.0-alpha.1
-publish = false
-# Kept out of the package: CI and release tooling. assets/ stays in: the map outlines are
-# compiled into the binary.
-exclude = [".github/", "deny.toml", "release/", "signing/", "tools/"]
+# Kept out of the package: CI and release tooling, and the README demo (docs/). assets/
+# stays in: the map outlines are compiled into the binary.
+exclude = [".github/", "deny.toml", "release/", "signing/", "tools/", "docs/"]
 
 [dependencies]
 anyhow = "1.0.104"

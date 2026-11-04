@@ -264,12 +264,14 @@ impl View {
         (w, e, s, n)
     }
 
-    /// Highest level within dot (i, j), sampling up to 3×3 pixels inside it.
-    /// `tile` returns None for tiles not loaded yet.
+    /// The level for dot (i, j), sampling up to 3×3 pixels inside it. Any precipitation
+    /// lights the dot (so small showers don't vanish when zoomed out), colored by the most
+    /// common level among the wet samples rather than the heaviest, which would let one
+    /// heavy pixel paint the whole dot. `tile` returns None for tiles not loaded yet.
     pub fn sample<'a>(&self, i: usize, j: usize, tile: &impl Fn(u32, u32) -> Option<&'a Tile>) -> u8 {
         let n = 1i64 << self.z;
         let steps = (self.px_per_dot.ceil() as usize).clamp(1, 3);
-        let mut best = 0;
+        let mut counts = [0u8; 7];
         for sy in 0..steps {
             for sx in 0..steps {
                 let px = self.left + (i as f64 + (sx as f64 + 0.5) / steps as f64) * self.px_per_dot;
@@ -281,12 +283,18 @@ impl View {
                 if let Some(t) = tile(tx.rem_euclid(n) as u32, ty as u32) {
                     let lx = (px - (tx * TILE as i64) as f64) as usize;
                     let ly = (py - (ty * TILE as i64) as f64) as usize;
-                    best = best.max(t.level(lx.min(TILE - 1), ly.min(TILE - 1)));
+                    counts[t.level(lx.min(TILE - 1), ly.min(TILE - 1)) as usize] += 1;
                 }
             }
         }
-        best
+        majority(&counts)
     }
+}
+
+/// The most common non-zero level in `counts` (indexed by level), heavier on ties; 0 if
+/// there is none.
+pub fn majority(counts: &[u8; 7]) -> u8 {
+    (1..7u8).filter(|&l| counts[l as usize] > 0).max_by_key(|&l| (counts[l as usize], l)).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -329,6 +337,15 @@ mod tests {
         assert!(!valid_path("/v2/radar/../../x"));
         assert!(!valid_path("/v2/radar/abc?x=1"));
         assert!(!valid_path("https://evil.example/v2/radar/abc"));
+    }
+
+    #[test]
+    fn majority_prefers_common_then_heavier() {
+        assert_eq!(majority(&[9, 0, 0, 0, 0, 0, 0]), 0);
+        // Mostly light rain with one heavy pixel reads as light rain.
+        assert_eq!(majority(&[0, 0, 5, 0, 0, 1, 0]), 2);
+        // A tie goes to the heavier level, so real heavy cores still show.
+        assert_eq!(majority(&[0, 2, 0, 0, 2, 0, 0]), 4);
     }
 
     #[test]

@@ -6,6 +6,26 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-11-03
+
+The second alpha. From crates.io:
+
+```sh
+cargo install skycast --version 0.1.0-alpha.2
+```
+
+### Changed
+
+- Radar colors follow the most common precipitation level instead of the heaviest. One
+  heavy pixel no longer colors a whole dot, and one heavy dot no longer colors a whole
+  terminal cell, so moderate showers stop looking like downpours when zoomed out.
+- Releases go to crates.io from the release workflow (trusted publishing, after the
+  maintainer approves), alongside the GitHub release.
+
+### Added
+
+- A demo GIF in the README (`docs/demo.tape`, recorded with vhs).
+
 ## [0.1.0-alpha.1] - 2026-11-03
 
 The first alpha, for private testing. Not published to crates.io; install from git:
@@ -34,5 +54,6 @@ cargo install --git https://github.com/tlpinney/skycast --tag v0.1.0-alpha.1
 - Retries for temporary network failures.
 - Data from Open-Meteo, the National Weather Service, RainViewer and NOAA; no API keys.
 
-[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/tlpinney/skycast/releases/tag/v0.1.0-alpha.1
