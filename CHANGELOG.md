@@ -6,6 +6,14 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-11-03
+
+The third alpha: the first macOS binary. From crates.io:
+
+```sh
+cargo install skycast --version 0.1.0-alpha.3
+```
+
 ### Added
 
 - A macOS binary: one universal build for Apple silicon and Intel, signed with the
@@ -64,6 +72,7 @@ cargo install --git https://github.com/tlpinney/skycast --tag v0.1.0-alpha.1
 - Retries for temporary network failures.
 - Data from Open-Meteo, the National Weather Service, RainViewer and NOAA; no API keys.
 
-[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.3...HEAD
+[0.1.0-alpha.3]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/tlpinney/skycast/releases/tag/v0.1.0-alpha.1

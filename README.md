@@ -45,7 +45,7 @@ skycast is in alpha. From [crates.io](https://crates.io/crates/skycast) (pre-rel
 the version spelled out):
 
 ```sh
-cargo install skycast --version 0.1.0-alpha.2
+cargo install skycast --version 0.1.0-alpha.3
 ```
 
 Binaries for Linux and macOS (signed with an Apple Developer ID and notarized) are on the
