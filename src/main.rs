@@ -1,5 +1,6 @@
 mod api;
 mod basemap;
+mod config;
 mod precip;
 mod radar;
 mod solar;
@@ -20,7 +21,8 @@ use ratatui::layout::Rect;
 
 use api::{Forecast, Place, Units};
 
-const DEFAULT_LOCATION: &str = "Herndon, VA";
+/// Wait this long after the last keystroke before searching for places.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const AUTO_REFRESH: Duration = Duration::from_secs(15 * 60);
 /// After a failed fetch, try again this soon instead of waiting for the next refresh.
 const ERROR_RETRY: Duration = Duration::from_secs(60);
@@ -42,14 +44,17 @@ skycast - weather, radar, sun, moon and tides in the terminal
 Usage: skycast [OPTIONS]
 
 Options:
-  -l, --location <NAME>   City, optionally with state or country (default: \"Herndon, VA\")
+  -l, --location <NAME>   City, optionally with state or country, for this run only
       --lat <LAT> --lon <LON>
-                          Use coordinates instead of a place name
+                          Use coordinates instead of a place name, for this run only
   -m, --metric            Celsius, km/h, mm (default: Fahrenheit, mph, inches)
   -h, --help              Show this help
 
+With neither, skycast uses your saved location, or asks for one the first time.
+Press l to search for a different place; the one you choose is saved.
+
 Keys: Tab / ←→ switch screens (1 Today, 2 7 days, 3 Radar, 4 Sun, 5 Tides), a alerts,
-      r refresh, q / Esc quit
+      l change location, r refresh, q / Esc quit
 Radar: + / - zoom, space play/pause the last two hours, , / . step one scan";
 
 enum Location {
@@ -58,7 +63,7 @@ enum Location {
 }
 
 struct Args {
-    location: Location,
+    location: Option<Location>,
     units: Units,
 }
 
@@ -89,9 +94,9 @@ fn parse_args() -> Result<Args> {
             if !(-180.0..=180.0).contains(&o) {
                 bail!("--lon must be between -180 and 180");
             }
-            Location::Coords(a, o)
+            Some(Location::Coords(a, o))
         }
-        (None, None, n) => Location::Name(n.unwrap_or_else(|| DEFAULT_LOCATION.into())),
+        (None, None, n) => n.map(Location::Name),
         _ => bail!("--lat and --lon must be given together"),
     };
     Ok(Args { location, units })
@@ -198,12 +203,14 @@ enum RadarReq {
     Frames,
     Tile(String, radar::TileKey),
     Tides(Place, Units, chrono::NaiveDate),
+    Search(u64, String),
 }
 
 enum RadarResp {
     Frames(Result<radar::Frames, String>),
     Tile(radar::TileKey, Result<radar::Tile, String>),
     Tides(chrono::NaiveDate, Result<Option<tides::Tides>, String>),
+    Search(u64, Result<Vec<api::PlaceMatch>, String>),
 }
 
 /// A few threads so a screen's worth of tiles loads in parallel.
@@ -224,6 +231,9 @@ fn spawn_radar_workers(n: usize) -> (mpsc::Sender<RadarReq>, mpsc::Receiver<Rada
                     }
                     RadarReq::Tides(place, units, day) => {
                         RadarResp::Tides(day, tides::fetch(&place, units, day).map_err(|e| format!("{e:#}")))
+                    }
+                    RadarReq::Search(seq, query) => {
+                        RadarResp::Search(seq, api::search(&query).map(|(r, _)| r).map_err(|e| format!("{e:#}")))
                     }
                 };
                 if res_tx.send(resp).is_err() {
@@ -292,6 +302,24 @@ fn radar_receive(app: &mut App, rx: &mpsc::Receiver<RadarResp>) {
     let r = &mut app.radar;
     while let Ok(resp) = rx.try_recv() {
         match resp {
+            RadarResp::Search(seq, res) => {
+                let s = &mut app.search;
+                if seq != s.seq {
+                    continue; // an older query's answer
+                }
+                s.searching = false;
+                s.selected = 0;
+                match res {
+                    Ok(results) => {
+                        s.message = results.is_empty().then(|| "No places match".to_string());
+                        s.results = results;
+                    }
+                    Err(e) => {
+                        s.results.clear();
+                        s.message = Some(format!("Search failed: {e}"));
+                    }
+                }
+            }
             RadarResp::Tides(day, res) => {
                 let t = &mut app.tides;
                 t.pending = false;
@@ -334,8 +362,39 @@ fn radar_receive(app: &mut App, rx: &mpsc::Receiver<RadarResp>) {
     }
 }
 
+/// The place search popup.
+#[derive(Default)]
+pub struct SearchState {
+    pub open: bool,
+    pub query: String,
+    pub results: Vec<api::PlaceMatch>,
+    pub selected: usize,
+    pub searching: bool,
+    /// Shown above the results: "No places match", an error, or why the popup opened.
+    pub message: Option<String>,
+    /// When the query last changed; a search goes out once it has been still for a moment.
+    changed_at: Option<Instant>,
+    /// Numbers each search so a slow, outdated answer can't replace a newer one.
+    seq: u64,
+}
+
+impl SearchState {
+    fn open_with(&mut self, query: &str, message: Option<String>) {
+        *self = SearchState { open: true, query: query.into(), message, seq: self.seq, ..Default::default() };
+        if !query.is_empty() {
+            self.changed_at = Some(Instant::now() - SEARCH_DEBOUNCE);
+        }
+    }
+
+    fn edited(&mut self) {
+        self.changed_at = Some(Instant::now());
+        self.message = None;
+    }
+}
+
 pub struct App {
     pub screen: Screen,
+    pub search: SearchState,
     pub radar: RadarState,
     pub tides: TideState,
     /// Alert details popup.
@@ -348,46 +407,29 @@ pub struct App {
     pub last_good: Option<Box<Forecast>>,
     pub updated: Option<DateTime<Local>>,
     pub fetching: bool,
+    /// A one-off message for the footer.
+    pub notice: Option<String>,
 }
 
-type FetchResult = Result<(Place, Forecast), String>;
+type FetchResult = (Place, Result<Forecast, String>);
 
-/// Worker thread: resolves the place once, then fetches whenever asked.
-fn spawn_worker(location: Location, units: Units) -> (mpsc::Sender<()>, mpsc::Receiver<FetchResult>) {
-    let (req_tx, req_rx) = mpsc::channel::<()>();
+/// Worker thread: fetches the forecast for whichever place it's sent.
+fn spawn_worker(units: Units) -> (mpsc::Sender<Place>, mpsc::Receiver<FetchResult>) {
+    let (req_tx, req_rx) = mpsc::channel::<Place>();
     let (res_tx, res_rx) = mpsc::channel::<FetchResult>();
     thread::spawn(move || {
-        let mut place: Option<Place> = None;
-        while req_rx.recv().is_ok() {
-            let result = (|| -> Result<(Place, Forecast)> {
-                let p = match &place {
-                    Some(p) => p.clone(),
-                    None => {
-                        let p = match &location {
-                            Location::Name(n) => api::geocode(n)?,
-                            Location::Coords(lat, lon) => Place {
-                                name: format!("{lat:.3}, {lon:.3}"),
-                                lat: *lat,
-                                lon: *lon,
-                            },
-                        };
-                        place = Some(p.clone());
-                        p
+        while let Ok(place) = req_rx.recv() {
+            let mut result = api::fetch_today(&place, units);
+            for pause in TRANSIENT_RETRIES {
+                match &result {
+                    Err(e) if transient(e) => {
+                        thread::sleep(pause);
+                        result = api::fetch_today(&place, units);
                     }
-                };
-                let mut result = api::fetch_today(&p, units);
-                for pause in TRANSIENT_RETRIES {
-                    match &result {
-                        Err(e) if transient(e) => {
-                            thread::sleep(pause);
-                            result = api::fetch_today(&p, units);
-                        }
-                        _ => break,
-                    }
+                    _ => break,
                 }
-                Ok((p, result?))
-            })();
-            if res_tx.send(result.map_err(|e| format!("{e:#}"))).is_err() {
+            }
+            if res_tx.send((place, result.map_err(|e| format!("{e:#}")))).is_err() {
                 break;
             }
         }
@@ -395,35 +437,83 @@ fn spawn_worker(location: Location, units: Units) -> (mpsc::Sender<()>, mpsc::Re
     (req_tx, res_rx)
 }
 
+/// Where to start: the command line, then the saved location, then ask. A name that finds
+/// nothing opens the search with that name filled in.
+fn starting_place(location: Option<Location>, search: &mut SearchState) -> Option<Place> {
+    match location {
+        Some(Location::Coords(lat, lon)) => Some(Place { name: format!("{lat:.3}, {lon:.3}"), lat, lon }),
+        Some(Location::Name(n)) => match api::geocode(&n) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                search.open_with(&n, Some(format!("{e:#}")));
+                None
+            }
+        },
+        None => {
+            let saved = config::load().location;
+            if saved.is_none() {
+                search.open_with("", Some("Where are you? Type a city to search.".into()));
+            }
+            saved
+        }
+    }
+}
+
+/// Switch to a place chosen in the search: remember it, clear the old place's data and fetch.
+fn choose_place(app: &mut App, place: Place, tx: &mpsc::Sender<Place>) -> Result<()> {
+    let config = config::Config { location: Some(place.clone()) };
+    // Not fatal: the place still works for this run, and the footer says it wasn't saved.
+    app.notice = config::save(&config).err().map(|e| format!("location not saved: {e:#}"));
+    app.place = Some(place.clone());
+    app.search.open = false;
+    app.status = Status::Loading;
+    app.last_good = None;
+    app.updated = None;
+    app.tides = TideState::default();
+    app.show_alerts = false;
+    app.fetching = true;
+    tx.send(place)?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = parse_args()?;
-    let (req_tx, res_rx) = spawn_worker(args.location, args.units);
+    let (req_tx, res_rx) = spawn_worker(args.units);
     let (radar_tx, radar_rx) = spawn_radar_workers(6);
 
+    let mut search = SearchState::default();
+    let place = starting_place(args.location, &mut search);
     let mut app = App {
         screen: Screen::Today,
+        search,
         radar: RadarState::new(),
         tides: TideState::default(),
         show_alerts: false,
         alert_scroll: 0,
-        place: None,
+        place: place.clone(),
         units: args.units,
         status: Status::Loading,
         last_good: None,
         updated: None,
-        fetching: true,
+        fetching: place.is_some(),
+        notice: None,
     };
-    req_tx.send(())?;
+    if let Some(p) = place {
+        req_tx.send(p)?;
+    }
     let mut last_request = Instant::now();
 
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         loop {
-            while let Ok(res) = res_rx.try_recv() {
+            while let Ok((place, res)) = res_rx.try_recv() {
+                // An answer for a place we've since moved away from.
+                if app.place.as_ref() != Some(&place) {
+                    continue;
+                }
                 app.fetching = false;
                 match res {
-                    Ok((place, forecast)) => {
-                        app.place = Some(place);
+                    Ok(forecast) => {
                         let f = Box::new(forecast);
                         app.last_good = Some(f.clone());
                         app.status = Status::Ready(f);
@@ -435,6 +525,22 @@ fn main() -> Result<()> {
 
             radar_receive(&mut app, &radar_rx);
 
+            // Search once the query has been still for a moment.
+            if let Some(t) = app.search.changed_at
+                && t.elapsed() >= SEARCH_DEBOUNCE
+            {
+                let s = &mut app.search;
+                s.changed_at = None;
+                s.seq += 1;
+                if s.query.trim().chars().count() >= 2 {
+                    s.searching = true;
+                    radar_tx.send(RadarReq::Search(s.seq, s.query.trim().to_string()))?;
+                } else {
+                    s.searching = false;
+                    s.results.clear();
+                }
+            }
+
             terminal.draw(|f| ui::draw(f, &app))?;
 
             if app.screen == Screen::Radar {
@@ -444,7 +550,8 @@ fn main() -> Result<()> {
                 tides_tick(&mut app, &radar_tx)?;
             }
 
-            let tick = if app.screen == Screen::Radar && (app.radar.playing || app.radar.loading()) {
+            let busy = app.search.changed_at.is_some() || app.search.searching;
+            let tick = if busy || (app.screen == Screen::Radar && (app.radar.playing || app.radar.loading())) {
                 Duration::from_millis(100)
             } else {
                 Duration::from_millis(250)
@@ -452,6 +559,41 @@ fn main() -> Result<()> {
             if event::poll(tick)?
                 && let Event::Key(k) = event::read()? {
                     if k.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    if app.search.open {
+                        let s = &mut app.search;
+                        match k.code {
+                            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
+                            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                                s.query.clear();
+                                s.edited();
+                            }
+                            KeyCode::Esc => {
+                                // Nothing to go back to on first run: Esc quits.
+                                if app.place.is_none() {
+                                    break;
+                                }
+                                s.open = false;
+                            }
+                            KeyCode::Enter => {
+                                if let Some(m) = s.results.get(s.selected).cloned() {
+                                    choose_place(&mut app, m.place, &req_tx)?;
+                                    last_request = Instant::now();
+                                }
+                            }
+                            KeyCode::Down => s.selected = (s.selected + 1).min(s.results.len().saturating_sub(1)),
+                            KeyCode::Up => s.selected = s.selected.saturating_sub(1),
+                            KeyCode::Backspace => {
+                                s.query.pop();
+                                s.edited();
+                            }
+                            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) && s.query.chars().count() < 80 => {
+                                s.query.push(c);
+                                s.edited();
+                            }
+                            _ => {}
+                        }
                         continue;
                     }
                     if app.show_alerts {
@@ -475,6 +617,7 @@ fn main() -> Result<()> {
                             app.alert_scroll = 0;
                         }
                         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
+                        KeyCode::Char('l') | KeyCode::Char('/') => app.search.open_with("", None),
                         KeyCode::Tab | KeyCode::Right => app.screen = app.screen.step(1),
                         KeyCode::BackTab | KeyCode::Left => app.screen = app.screen.step(-1),
                         KeyCode::Char('1') | KeyCode::Char('t') => app.screen = Screen::Today,
@@ -482,9 +625,9 @@ fn main() -> Result<()> {
                         KeyCode::Char('3') => app.screen = Screen::Radar,
                         KeyCode::Char('4') => app.screen = Screen::Sun,
                         KeyCode::Char('5') => app.screen = Screen::Tides,
-                        KeyCode::Char('r') if !app.fetching => {
+                        KeyCode::Char('r') if !app.fetching && app.place.is_some() => {
                             app.fetching = true;
-                            req_tx.send(())?;
+                            req_tx.send(app.place.clone().unwrap())?;
                             last_request = Instant::now();
                             app.radar.frames_fetched = None; // re-check radar on the next tick
                         }
@@ -512,9 +655,12 @@ fn main() -> Result<()> {
                 }
 
             let interval = if matches!(app.status, Status::Error(_)) { ERROR_RETRY } else { AUTO_REFRESH };
-            if !app.fetching && last_request.elapsed() >= interval {
+            if !app.fetching
+                && last_request.elapsed() >= interval
+                && let Some(p) = app.place.clone()
+            {
                 app.fetching = true;
-                req_tx.send(())?;
+                req_tx.send(p)?;
                 last_request = Instant::now();
             }
         }

@@ -2,14 +2,14 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const GEOCODE_URL: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
 const ALERTS_URL: &str = "https://api.weather.gov/alerts/active";
 const AIR_URL: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Place {
     pub name: String,
     pub lat: f64,
@@ -164,9 +164,19 @@ struct GeoResult {
     country_code: Option<String>,
 }
 
-/// Resolve "City" or "City, Qualifier" (state, state abbreviation, country) to coordinates.
-/// Open-Meteo only matches the bare name, so the qualifier is used to pick among results.
-pub fn geocode(query: &str) -> Result<Place> {
+/// A search result: the place, plus a longer label for telling places apart in a list
+/// ("Portland, Oregon, United States" vs "Portland, Maine, United States").
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaceMatch {
+    pub place: Place,
+    pub label: String,
+}
+
+/// Places matching "City" or "City, Qualifier" (state, state abbreviation or country), best
+/// first. Open-Meteo only matches the bare name, so results matching the qualifier are
+/// moved to the front. The flag says whether the first result matched the qualifier (true
+/// when there was none).
+pub fn search(query: &str) -> Result<(Vec<PlaceMatch>, bool)> {
     let mut parts = query.splitn(2, ',').map(str::trim);
     let name = parts.next().unwrap_or_default();
     let qualifier = parts.next().filter(|q| !q.is_empty());
@@ -181,26 +191,43 @@ pub fn geocode(query: &str) -> Result<Place> {
         .error_for_status()?
         .json()
         .context("bad geocoding response")?;
+    let (results, matched) = rank(resp.results, qualifier);
+    Ok((results.into_iter().map(to_match).collect(), matched))
+}
 
-    let pick = match qualifier {
-        None => resp.results.into_iter().next(),
-        Some(q) => {
-            let q = expand_state(q).to_lowercase();
-            resp.results.into_iter().find(|r| {
-                [&r.admin1, &r.country, &r.country_code]
-                    .into_iter()
-                    .flatten()
-                    .any(|s| s.to_lowercase() == q)
-            })
-        }
-    }
-    .ok_or_else(|| anyhow!("location '{query}' not found"))?;
+/// Results matching the qualifier first, otherwise in the API's order (by population).
+fn rank(results: Vec<GeoResult>, qualifier: Option<&str>) -> (Vec<GeoResult>, bool) {
+    let Some(q) = qualifier else { return (results, true) };
+    let q = expand_state(q).to_lowercase();
+    let is_match = |r: &GeoResult| {
+        [&r.admin1, &r.country, &r.country_code].into_iter().flatten().any(|s| s.to_lowercase() == q)
+    };
+    let (mut hits, rest): (Vec<_>, Vec<_>) = results.into_iter().partition(is_match);
+    let matched = !hits.is_empty();
+    hits.extend(rest);
+    (hits, matched)
+}
 
-    let mut label = pick.name.clone();
-    if let Some(region) = pick.admin1.as_ref().or(pick.country.as_ref()) {
-        label = format!("{label}, {region}");
+fn to_match(r: GeoResult) -> PlaceMatch {
+    let mut name = r.name.clone();
+    if let Some(region) = r.admin1.as_ref().or(r.country.as_ref()) {
+        name = format!("{name}, {region}");
     }
-    Ok(Place { name: label, lat: pick.latitude, lon: pick.longitude })
+    let mut label = name.clone();
+    if let Some(country) = r.country.as_ref().filter(|c| Some(*c) != r.admin1.as_ref()) {
+        label = format!("{label}, {country}");
+    }
+    PlaceMatch { place: Place { name, lat: r.latitude, lon: r.longitude }, label }
+}
+
+/// The single best place for a query, for `--location`. With a qualifier ("Herndon, VA"),
+/// only a place matching it counts.
+pub fn geocode(query: &str) -> Result<Place> {
+    let (results, matched) = search(query)?;
+    match results.into_iter().next() {
+        Some(m) if matched => Ok(m.place),
+        _ => Err(anyhow!("location '{query}' not found")),
+    }
 }
 
 fn expand_state(q: &str) -> &str {
@@ -531,7 +558,45 @@ pub fn compass(deg: f64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::compass;
+    use super::{GeoResult, compass, rank};
+
+    fn geo(name: &str, admin1: &str, country: &str, code: &str) -> GeoResult {
+        GeoResult {
+            name: name.into(),
+            latitude: 0.0,
+            longitude: 0.0,
+            admin1: Some(admin1.into()),
+            country: Some(country.into()),
+            country_code: Some(code.into()),
+        }
+    }
+
+    #[test]
+    fn qualifier_moves_matches_first() {
+        let results = || {
+            vec![
+                geo("Portland", "Oregon", "United States", "US"),
+                geo("Portland", "Maine", "United States", "US"),
+                geo("Portland", "Victoria", "Australia", "AU"),
+            ]
+        };
+        let (r, matched) = rank(results(), Some("ME"));
+        assert!(matched);
+        assert_eq!(r[0].admin1.as_deref(), Some("Maine"));
+        assert_eq!(r.len(), 3);
+        let (r, matched) = rank(results(), Some("Australia"));
+        assert!(matched && r[0].admin1.as_deref() == Some("Victoria"));
+        let (r, matched) = rank(results(), Some("Narnia"));
+        assert!(!matched && r[0].admin1.as_deref() == Some("Oregon"));
+        assert!(rank(results(), None).1);
+    }
+
+    #[test]
+    fn labels_tell_places_apart() {
+        let m = super::to_match(geo("Portland", "Maine", "United States", "US"));
+        assert_eq!(m.place.name, "Portland, Maine");
+        assert_eq!(m.label, "Portland, Maine, United States");
+    }
 
     #[test]
     fn compass_points() {

@@ -54,11 +54,15 @@ with a signed checksum file.
 ## Usage
 
 ```sh
-skycast                                 # Herndon, VA, °F
-skycast -l "Paris"                      # any place name
+skycast                                 # your saved location; asks the first time
+skycast -l "Paris"                      # any place name, just for this run
 skycast -l "Portland, OR"               # "City, ST" or "City, Country"
 skycast --lat 38.97 --lon -77.39 --metric
 ```
+
+The first time, skycast asks where you are: type a city, pick it from the matches, and it's
+saved in `~/.config/skycast/config.json`. Press `l` to search for a different place.
+`--location` and `--lat`/`--lon` don't change the saved one.
 
 From a checkout, `cargo run --release -- <options>` does the same.
 
@@ -67,6 +71,7 @@ Keys:
 | Key | Does |
 | --- | --- |
 | `Tab` / `←` `→` | switch screens (or `1` Today, `2` 7 days, `3` Radar, `4` Sun, `5` Tides) |
+| `l` or `/` | search for a location (↑↓ to pick, Enter to choose, Esc to close) |
 | `a` | weather alert details |
 | `r` | refresh |
 | `q` / `Esc` | quit |

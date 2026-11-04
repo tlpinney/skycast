@@ -18,6 +18,7 @@ use crate::wmo;
 use crate::{App, Screen, Status};
 
 mod compact;
+mod search;
 mod sun;
 mod tide;
 
@@ -127,7 +128,11 @@ fn panel(title: &str) -> Block<'_> {
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     if area.height <= STRIP_MAX_HEIGHT {
-        draw_strip(f, area, app);
+        if app.search.open {
+            search::draw_inline(f, area, &app.search);
+        } else {
+            draw_strip(f, area, app);
+        }
         return;
     }
     let [header, body, footer] =
@@ -176,6 +181,12 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .block(panel("Error"));
             f.render_widget(p, body);
         }
+        _ if app.place.is_none() => {
+            let p = Paragraph::new("\nWelcome to skycast.\n\nSearch for a city to get started.")
+                .alignment(Alignment::Center)
+                .block(panel("skycast"));
+            f.render_widget(p, body);
+        }
         _ => {
             let p = Paragraph::new("Fetching forecast…").alignment(Alignment::Center).block(panel("Today"));
             f.render_widget(p, body);
@@ -184,6 +195,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.show_alerts {
         draw_alert_popup(f, area, forecast, app.alert_scroll);
+    }
+    if app.search.open {
+        search::draw(f, area, &app.search);
     }
 }
 
@@ -315,7 +329,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let keys: &[(&str, &str)] = if app.screen == Screen::Radar {
         &[("tab", "switch"), ("+/-", "zoom"), ("space", "play"), ("q", "quit")]
     } else {
-        &[("tab", "switch"), ("r", "refresh"), ("q", "quit")]
+        &[("tab", "switch"), ("l", "location"), ("r", "refresh"), ("q", "quit")]
     };
     let mut spans = vec![Span::raw(" ")];
     for (k, what) in keys {
@@ -323,7 +337,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::raw(format!(" {what}  ")));
     }
     let keys_w = Line::from(spans.clone()).width() as u16;
-    let status = if app.fetching {
+    let status = if let Some(n) = &app.notice {
+        Span::styled(format!("{n} "), Style::new().yellow())
+    } else if app.fetching {
         Span::styled("updating… ", Style::new().yellow())
     } else if let (Status::Error(e), Some(_)) = (&app.status, &app.last_good) {
         Span::styled(format!("refresh failed: {e} "), Style::new().red())
