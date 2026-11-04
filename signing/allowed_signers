@@ -1,0 +1,4 @@
+# Keys trusted to sign skycast releases (their SHA256SUMS) and commits, for ssh-keygen -Y verify
+# and git verify-commit. The same keys are published as signing keys on GitHub.
+# Namespaces: skycast-release (releases) and git (signed commits and tags). Principal: tlpinney.
+tlpinney namespaces="skycast-release,git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFSZDt6uNCxuvSttHDBUcV1dctXJ1DBwYnQdbk19FfFP

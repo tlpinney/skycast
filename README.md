@@ -40,8 +40,11 @@ Data sources (none need an API key):
 ## Install
 
 ```sh
-cargo install --git https://github.com/tlpinney/skycast
+cargo install --git https://github.com/tlpinney/skycast --tag v0.1.0-alpha.1
 ```
+
+skycast is in alpha: it isn't on crates.io yet. Linux binaries are on the
+[releases page](https://github.com/tlpinney/skycast/releases), with a signed checksum file.
 
 ## Usage
 
