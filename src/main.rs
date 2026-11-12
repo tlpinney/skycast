@@ -1,6 +1,7 @@
 mod api;
 mod basemap;
 mod config;
+mod herdr;
 mod precip;
 mod radar;
 mod solar;
@@ -12,7 +13,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local};
@@ -416,6 +417,25 @@ pub struct App {
 
 type FetchResult = (Place, Result<Forecast, String>);
 
+/// A moment, timed on both clocks. On macOS `Instant` stops while the computer sleeps, so
+/// after waking it would be up to a full refresh interval late; the wall clock isn't.
+#[derive(Clone, Copy)]
+struct Since {
+    mono: Instant,
+    wall: SystemTime,
+}
+
+impl Since {
+    fn now() -> Self {
+        Self { mono: Instant::now(), wall: SystemTime::now() }
+    }
+
+    fn elapsed(&self) -> Duration {
+        // A wall clock set backwards errs, and then the monotonic one still counts.
+        self.mono.elapsed().max(self.wall.elapsed().unwrap_or_default())
+    }
+}
+
 /// Worker thread: fetches the forecast for whichever place it's sent.
 fn spawn_worker(units: Units) -> (mpsc::Sender<Place>, mpsc::Receiver<FetchResult>) {
     let (req_tx, req_rx) = mpsc::channel::<Place>();
@@ -506,7 +526,8 @@ fn main() -> Result<()> {
     if let Some(p) = place {
         req_tx.send(p)?;
     }
-    let mut last_request = Instant::now();
+    let mut last_request = Since::now();
+    let mut notifier = herdr::Notifier::from_env();
 
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
@@ -519,6 +540,7 @@ fn main() -> Result<()> {
                 app.fetching = false;
                 match res {
                     Ok(forecast) => {
+                        notifier.alerts(forecast.alerts.as_deref().unwrap_or(&[]));
                         let f = Box::new(forecast);
                         app.last_good = Some(f.clone());
                         app.status = Status::Ready(f);
@@ -584,7 +606,7 @@ fn main() -> Result<()> {
                             KeyCode::Enter => {
                                 if let Some(m) = s.results.get(s.selected).cloned() {
                                     choose_place(&mut app, m.place, &req_tx)?;
-                                    last_request = Instant::now();
+                                    last_request = Since::now();
                                 }
                             }
                             KeyCode::Down => s.selected = (s.selected + 1).min(s.results.len().saturating_sub(1)),
@@ -648,7 +670,7 @@ fn main() -> Result<()> {
                         KeyCode::Char('r') if !app.fetching && app.place.is_some() => {
                             app.fetching = true;
                             req_tx.send(app.place.clone().unwrap())?;
-                            last_request = Instant::now();
+                            last_request = Since::now();
                             app.radar.frames_fetched = None; // re-check radar on the next tick
                         }
                         // Radar controls.
@@ -681,7 +703,7 @@ fn main() -> Result<()> {
             {
                 app.fetching = true;
                 req_tx.send(p)?;
-                last_request = Instant::now();
+                last_request = Since::now();
             }
         }
         Ok(())

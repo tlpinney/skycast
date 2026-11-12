@@ -1,12 +1,20 @@
 //! Open-Meteo client: geocoding plus today's forecast. No API key needed.
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, Utc};
+use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 const GEOCODE_URL: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
-const ALERTS_URL: &str = "https://api.weather.gov/alerts/active";
+const ALERTS_URL: &str = "https://api.weather.gov/alerts";
+/// How far back the alerts popup lists alerts that have ended, so one that came and went
+/// while skycast or the computer was asleep is still there to read. A day covers a fog
+/// statement at dawn looked for after work.
+pub const RECENT_ALERTS: chrono::Duration = chrono::Duration::hours(24);
+/// How far back to ask for alert history. The NWS filters on when an alert was sent, and
+/// one sent days ago can have ended within [`RECENT_ALERTS`].
+const ALERT_HISTORY: chrono::Duration = chrono::Duration::days(3);
 const AIR_URL: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +91,8 @@ pub enum Severity {
 
 #[derive(Debug, Clone)]
 pub struct Alert {
+    /// The NWS alert ID. An update to an alert is issued under a new ID.
+    pub id: String,
     pub event: String,
     pub severity: Severity,
     pub headline: Option<String>,
@@ -91,6 +101,8 @@ pub struct Alert {
     pub area: String,
     /// When it ends (or, failing that, expires), in the issuing office's local time.
     pub until: Option<DateTime<FixedOffset>>,
+    /// When the NWS sent it.
+    pub sent: Option<DateTime<FixedOffset>>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +151,8 @@ pub struct Forecast {
     pub air: Option<Air>,
     /// Active NWS alerts, most severe first. None outside the US or when the NWS API failed.
     pub alerts: Option<Vec<Alert>>,
+    /// Alerts that ended within [`RECENT_ALERTS`], newest first.
+    pub recent_alerts: Vec<Alert>,
 }
 
 fn client() -> Result<reqwest::blocking::Client> {
@@ -362,7 +376,12 @@ pub fn fetch_today(place: &Place, units: Units) -> Result<Forecast> {
 
     hours.retain(|h| h.time.date() == now.date());
     let air = fetch_air(place, &mut hours).ok();
-    let alerts = fetch_alerts(place).ok().flatten();
+    let alerts = fetch_alerts(place, &[]).ok().flatten();
+    // Not worth failing the forecast over: the popup just has no history.
+    let recent_alerts = match &alerts {
+        Some(active) => fetch_recent_alerts(place, active).unwrap_or_default(),
+        None => Vec::new(),
+    };
 
     let d = &raw.daily;
     let days = d
@@ -409,6 +428,7 @@ pub fn fetch_today(place: &Place, units: Units) -> Result<Forecast> {
         days,
         air,
         alerts,
+        recent_alerts,
     })
 }
 
@@ -492,12 +512,20 @@ struct RawAlerts {
 
 #[derive(Deserialize)]
 struct RawAlertFeature {
+    #[serde(default)]
+    id: String,
     properties: RawAlert,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawAlert {
+    /// "Alert", "Update" or "Cancel".
+    message_type: Option<String>,
+    sent: Option<String>,
+    /// The earlier messages this one updates or cancels.
+    #[serde(default)]
+    references: Vec<RawAlertRef>,
     event: String,
     severity: Option<String>,
     headline: Option<String>,
@@ -508,46 +536,77 @@ struct RawAlert {
     expires: Option<String>,
 }
 
-/// Active National Weather Service alerts for the point. Ok(None) means the point is
-/// outside NWS coverage (the API answers 400 "out of bounds").
-fn fetch_alerts(place: &Place) -> Result<Option<Vec<Alert>>> {
+#[derive(Deserialize)]
+struct RawAlertRef {
+    identifier: String,
+}
+
+/// National Weather Service alerts for the point: the active ones with no `query`, or
+/// those matching it. Ok(None) means the point is outside NWS coverage (the API answers
+/// 400 "out of bounds").
+fn fetch_alerts(place: &Place, query: &[(&str, String)]) -> Result<Option<Vec<Alert>>> {
+    let url = if query.is_empty() { format!("{ALERTS_URL}/active") } else { ALERTS_URL.to_string() };
     let resp = client()?
-        .get(ALERTS_URL)
+        .get(url)
         .header("Accept", "application/geo+json")
         .query(&[("point", format!("{:.4},{:.4}", place.lat, place.lon))])
+        .query(query)
         .send()?;
     if resp.status() == reqwest::StatusCode::BAD_REQUEST {
         return Ok(None);
     }
     let raw: RawAlerts = resp.error_for_status()?.json().context("bad alerts response")?;
-    let mut alerts: Vec<Alert> = raw
-        .features
-        .into_iter()
-        .map(|f| {
-            let p = f.properties;
-            let until = p
-                .ends
-                .or(p.expires)
-                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok());
-            Alert {
-                severity: match p.severity.as_deref() {
-                    Some("Extreme") => Severity::Extreme,
-                    Some("Severe") => Severity::Severe,
-                    Some("Moderate") => Severity::Moderate,
-                    Some("Minor") => Severity::Minor,
-                    _ => Severity::Unknown,
-                },
-                event: p.event,
-                headline: p.headline,
-                description: p.description.unwrap_or_default(),
-                instruction: p.instruction,
-                area: p.area_desc.unwrap_or_default(),
-                until,
-            }
-        })
-        .collect();
+    if !query.is_empty() {
+        return Ok(Some(ended(raw.features, Utc::now())));
+    }
+    let mut alerts: Vec<Alert> = raw.features.into_iter().map(alert).collect();
     alerts.sort_by_key(|a| std::cmp::Reverse(a.severity));
     Ok(Some(alerts))
+}
+
+/// Alerts that ended within [`RECENT_ALERTS`], leaving out the active ones.
+fn fetch_recent_alerts(place: &Place, active: &[Alert]) -> Result<Vec<Alert>> {
+    let start = (Utc::now() - ALERT_HISTORY).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let recent = fetch_alerts(place, &[("start", start), ("status", "actual".into())])?.unwrap_or_default();
+    Ok(recent.into_iter().filter(|a| !active.iter().any(|b| b.id == a.id)).collect())
+}
+
+/// From an alert history, the alerts that ended within [`RECENT_ALERTS`] of `now`, newest first. A message
+/// that a later one updates or cancels is left out (the later one stands for it), and so
+/// are the cancellations themselves.
+fn ended(history: Vec<RawAlertFeature>, now: DateTime<Utc>) -> Vec<Alert> {
+    let replaced: HashSet<String> =
+        history.iter().flat_map(|f| f.properties.references.iter().map(|r| r.identifier.clone())).collect();
+    let mut alerts: Vec<Alert> = history
+        .into_iter()
+        .filter(|f| !replaced.contains(&f.id) && f.properties.message_type.as_deref() != Some("Cancel"))
+        .map(alert)
+        .filter(|a| a.until.is_some_and(|t| t <= now && t > now - RECENT_ALERTS))
+        .collect();
+    alerts.sort_by_key(|a| std::cmp::Reverse(a.sent));
+    alerts
+}
+
+fn alert(f: RawAlertFeature) -> Alert {
+    let p = f.properties;
+    let time = |t: Option<String>| t.and_then(|t| DateTime::parse_from_rfc3339(&t).ok());
+    Alert {
+        id: f.id,
+        severity: match p.severity.as_deref() {
+            Some("Extreme") => Severity::Extreme,
+            Some("Severe") => Severity::Severe,
+            Some("Moderate") => Severity::Moderate,
+            Some("Minor") => Severity::Minor,
+            _ => Severity::Unknown,
+        },
+        event: p.event,
+        headline: p.headline,
+        description: p.description.unwrap_or_default(),
+        instruction: p.instruction,
+        area: p.area_desc.unwrap_or_default(),
+        until: time(p.ends.or(p.expires)),
+        sent: time(p.sent),
+    }
 }
 
 /// 8-point compass name for a "wind from" bearing in degrees.
@@ -558,7 +617,8 @@ pub fn compass(deg: f64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{GeoResult, compass, rank};
+    use super::{GeoResult, RawAlerts, compass, ended, rank};
+    use chrono::{DateTime, Utc};
 
     fn geo(name: &str, admin1: &str, country: &str, code: &str) -> GeoResult {
         GeoResult {
@@ -569,6 +629,36 @@ mod tests {
             country: Some(country.into()),
             country_code: Some(code.into()),
         }
+    }
+
+    #[test]
+    fn ended_alerts_skip_replaced_and_cancelled() {
+        // a1 expired; b1 was updated by b2 (expired); c1 was cancelled; e1 ended over a day
+        // ago; d1 runs till later.
+        let raw: RawAlerts = serde_json::from_str(
+            r#"{"features": [
+            {"id": "a1", "properties": {"messageType": "Alert", "event": "Dense Fog Advisory",
+                "sent": "2026-11-12T05:00:00-05:00", "expires": "2026-11-12T08:30:00-05:00"}},
+            {"id": "b1", "properties": {"messageType": "Alert", "event": "Wind Advisory",
+                "sent": "2026-11-12T01:00:00-05:00", "ends": "2026-11-12T06:00:00-05:00"}},
+            {"id": "b2", "properties": {"messageType": "Update", "event": "Wind Advisory",
+                "sent": "2026-11-12T04:00:00-05:00", "ends": "2026-11-12T07:00:00-05:00",
+                "references": [{"identifier": "b1"}]}},
+            {"id": "c1", "properties": {"messageType": "Alert", "event": "Frost Advisory",
+                "sent": "2026-11-12T02:00:00-05:00", "ends": "2026-11-12T05:00:00-05:00"}},
+            {"id": "c2", "properties": {"messageType": "Cancel", "event": "Frost Advisory",
+                "sent": "2026-11-12T03:00:00-05:00", "expires": "2026-11-12T04:00:00-05:00",
+                "references": [{"identifier": "c1"}]}},
+            {"id": "e1", "properties": {"messageType": "Alert", "event": "Heat Advisory",
+                "sent": "2026-11-10T09:00:00-05:00", "ends": "2026-11-11T09:00:00-05:00"}},
+            {"id": "d1", "properties": {"messageType": "Alert", "event": "Flood Watch",
+                "sent": "2026-11-12T06:00:00-05:00", "ends": "2026-11-13T06:00:00-05:00"}}
+        ]}"#,
+        )
+        .unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-11-12T12:00:00-05:00").unwrap().with_timezone(&Utc);
+        let ids: Vec<String> = ended(raw.features, now).into_iter().map(|a| a.id).collect();
+        assert_eq!(ids, ["a1", "b2"]);
     }
 
     #[test]

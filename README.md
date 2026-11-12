@@ -84,7 +84,14 @@ Five screens:
 - **Tides**: the current level and whether it's rising or falling, the next high and low,
   a two-day tide curve and a high/low table.
 
-Active US weather alerts show as a banner on every screen.
+Active US weather alerts show as a banner on every screen. `a` shows the details, and
+also lists alerts that ended in the last 24 hours, so one that came and went while skycast
+or your computer was asleep is still there to read. With no alert active, the most recent
+ended one gets a quieter line at the top.
+
+Run inside a [herdr](https://herdr.dev) pane, skycast also shows each new alert as a herdr
+notification, once per alert. Severe and extreme alerts play a sound. Outside herdr it
+doesn't try.
 
 Short panes get compact layouts: under 18 rows the Today screen becomes a dense summary,
 and at 1–3 rows the whole widget becomes a strip with no header or footer, e.g.

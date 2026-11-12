@@ -6,6 +6,17 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Inside a herdr pane, each new weather alert shows as a herdr notification.
+- The alerts popup (`a`) lists alerts that ended in the last 24 hours, and with none active
+  the latest gets a line at the top.
+
+### Fixed
+
+- After the computer wakes from sleep, the forecast refreshes right away instead of up to
+  15 minutes later.
+
 ## [0.1.0] - 2026-11-03
 
 The first stable-numbered release, so plain Cargo commands find it (they skip

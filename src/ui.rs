@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Axis, Bar, BarChart, BarGroup, Block, Clear, Padding, BorderType, Chart, Dataset, GraphType, Paragraph, Wrap},
 };
 
-use crate::api::{Alert, Forecast, Severity, Units, aqi_category, compass};
+use crate::api::{Alert, Forecast, RECENT_ALERTS, Severity, Units, aqi_category, compass};
 use crate::wmo;
 use crate::{App, Screen, Status};
 
@@ -147,9 +147,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         Status::Ready(fc) => Some(fc.as_ref()),
         _ => app.last_good.as_deref(),
     };
-    // Active alerts get a banner across the top of every screen.
+    // Active alerts get a banner across the top of every screen; with none active, one
+    // that ended recently gets a quieter line, in case it came and went unseen.
     let alerts: &[Alert] = forecast.and_then(|fc| fc.alerts.as_deref()).unwrap_or(&[]);
-    let body = if alerts.is_empty() {
+    let recent: &[Alert] = forecast.map_or(&[], |fc| &fc.recent_alerts);
+    let body = if alerts.is_empty() && !recent.is_empty() {
+        let [banner, rest] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
+        draw_recent_banner(f, banner, recent);
+        rest
+    } else if alerts.is_empty() {
         body
     } else {
         let shown = alerts.len().min(3) as u16;
@@ -229,7 +235,7 @@ fn severity_color(s: Severity) -> Color {
     }
 }
 
-fn alert_until(a: &Alert) -> String {
+pub(crate) fn alert_until(a: &Alert) -> String {
     a.until.map(|t| format!(" until {}", t.format("%a %-I:%M %p"))).unwrap_or_default()
 }
 
@@ -249,43 +255,85 @@ fn draw_alert_banner(f: &mut Frame, area: Rect, alerts: &[Alert]) {
     }
 }
 
+fn draw_recent_banner(f: &mut Frame, area: Rect, recent: &[Alert]) {
+    let a = &recent[0];
+    let more = if recent.len() > 1 { format!(" +{} more", recent.len() - 1) } else { String::new() };
+    let line = Line::from(vec![
+        Span::styled(format!(" Earlier: {}{}", a.event, alert_ended(a)), Style::new().fg(severity_color(a.severity))),
+        Span::styled(format!("{more} · a details "), Style::new().dark_gray()),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
+
+/// " · ended Thu 8:30 AM", or nothing if the end time isn't known.
+fn alert_ended(a: &Alert) -> String {
+    a.until.map(|t| format!(" · ended {}", t.format("%a %-I:%M %p"))).unwrap_or_default()
+}
+
+/// An alert's details for the popup: a heading, then its text re-wrapped to the popup.
+fn alert_lines(lines: &mut Vec<Line<'static>>, a: &Alert, ended: bool) {
+    let dim = Style::new().dark_gray();
+    let (badge, when) = if ended {
+        let sent = a.sent.map(|t| format!(" · sent {}", t.format("%a %-I:%M %p"))).unwrap_or_default();
+        (Style::new().fg(severity_color(a.severity)).bold().reversed(), format!(" {:?}{sent}{}", a.severity, alert_ended(a)))
+    } else {
+        (Style::new().fg(Color::Black).bg(severity_color(a.severity)).bold(), format!(" {:?}{}", a.severity, alert_until(a)))
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {} ", a.event), badge),
+        Span::styled(when, Style::new().bold()),
+    ]));
+    if let Some(h) = &a.headline {
+        lines.push(Line::raw(h.clone()));
+    }
+    lines.push(Line::styled(a.area.clone(), dim));
+    lines.push(Line::raw(""));
+    // NWS text is hard-wrapped at ~70 columns; rejoin paragraphs so it re-wraps to the popup.
+    for para in a.description.split("\n\n") {
+        lines.push(Line::raw(para.replace('\n', " ")));
+        lines.push(Line::raw(""));
+    }
+    if let Some(ins) = &a.instruction {
+        lines.push(Line::styled("What to do", Style::new().bold()));
+        for para in ins.split("\n\n") {
+            lines.push(Line::raw(para.replace('\n', " ")));
+        }
+    }
+}
+
 fn draw_alert_popup(f: &mut Frame, area: Rect, fc: Option<&Forecast>, scroll: u16) {
     let popup = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
     f.render_widget(Clear, popup);
 
     let dim = Style::new().dark_gray();
     let mut lines: Vec<Line> = Vec::new();
+    let rule = |lines: &mut Vec<Line>| {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("─".repeat(popup.width.saturating_sub(4) as usize), dim));
+        lines.push(Line::raw(""));
+    };
     match fc.and_then(|fc| fc.alerts.as_ref()) {
         None => lines.push(Line::styled("Weather alerts come from the US National Weather Service and aren't available for this location.", dim)),
         Some(alerts) if alerts.is_empty() => lines.push(Line::styled("No active weather alerts for this area.", Style::new().green())),
         Some(alerts) => {
             for (i, a) in alerts.iter().enumerate() {
                 if i > 0 {
-                    lines.push(Line::raw(""));
-                    lines.push(Line::styled("─".repeat(popup.width.saturating_sub(4) as usize), dim));
-                    lines.push(Line::raw(""));
+                    rule(&mut lines);
                 }
-                lines.push(Line::from(vec![
-                    Span::styled(format!(" {} ", a.event), Style::new().fg(Color::Black).bg(severity_color(a.severity)).bold()),
-                    Span::styled(format!(" {:?}{}", a.severity, alert_until(a)), Style::new().bold()),
-                ]));
-                if let Some(h) = &a.headline {
-                    lines.push(Line::raw(h.clone()));
-                }
-                lines.push(Line::styled(a.area.clone(), dim));
-                lines.push(Line::raw(""));
-                // NWS text is hard-wrapped at ~70 columns; rejoin paragraphs so it re-wraps to the popup.
-                for para in a.description.split("\n\n") {
-                    lines.push(Line::raw(para.replace('\n', " ")));
-                    lines.push(Line::raw(""));
-                }
-                if let Some(ins) = &a.instruction {
-                    lines.push(Line::styled("What to do", Style::new().bold()));
-                    for para in ins.split("\n\n") {
-                        lines.push(Line::raw(para.replace('\n', " ")));
-                    }
-                }
+                alert_lines(&mut lines, a, false);
             }
+        }
+    }
+    let recent = fc.map_or(&[][..], |fc| &fc.recent_alerts);
+    if !recent.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(format!("Ended in the last {} hours", RECENT_ALERTS.num_hours()), Style::new().bold().underlined()));
+        lines.push(Line::raw(""));
+        for (i, a) in recent.iter().enumerate() {
+            if i > 0 {
+                rule(&mut lines);
+            }
+            alert_lines(&mut lines, a, true);
         }
     }
 
