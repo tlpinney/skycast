@@ -16,7 +16,11 @@ all-features = true
 # RustSec advisories: vulnerabilities fail; unmaintained crates and yanked versions are
 # reported too.
 yanked = "deny"
-ignore = []
+ignore = [
+    # chrono is unmaintained with no fixed version; it is a direct dependency used across the
+    # app. Tolerated until skycast moves to jiff or time.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; migration to jiff/time pending" },
+]
 
 [licenses]
 # Every dependency must be usable in an MIT-licensed crate: only these licenses are
