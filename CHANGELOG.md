@@ -6,16 +6,27 @@ All notable changes to skycast are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
 ### Added
 
 - Inside a herdr pane, each new weather alert shows as a herdr notification.
 - The alerts popup (`a`) lists alerts that ended in the last 24 hours, and with none active
   the latest gets a line at the top.
 
+### Changed
+
+- Dates and times use the `jiff` crate in place of `chrono`, which is no longer maintained.
+
 ### Fixed
 
 - After the computer wakes from sleep, the forecast refreshes right away instead of up to
   15 minutes later.
+
+### Security
+
+- Updated `url` to 2.5.9 for RUSTSEC-2026-0592 (stack overflow in `Url::origin()` on deeply
+  nested `blob:` URLs).
 
 ## [0.1.0] - 2026-11-03
 
@@ -102,7 +113,8 @@ cargo install --git https://github.com/tlpinney/skycast --tag v0.1.0-alpha.1
 - Retries for temporary network failures.
 - Data from Open-Meteo, the National Weather Service, RainViewer and NOAA; no API keys.
 
-[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tlpinney/skycast/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tlpinney/skycast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.3...v0.1.0
 [0.1.0-alpha.3]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/tlpinney/skycast/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
