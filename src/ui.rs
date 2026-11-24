@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use chrono::{Datelike, NaiveDateTime, Timelike};
+use jiff::civil::{Date, DateTime, Weekday};
+use jiff::tz::TimeZone;
+use jiff::Timestamp;
 use ratatui::{
     Frame,
     layout::{Alignment, Flex, Constraint, Layout, Rect},
@@ -63,11 +65,11 @@ fn deg(t: f64) -> String {
     format!("{:.0}°", t)
 }
 
-fn clock(t: NaiveDateTime) -> String {
-    t.format("%-I:%M %p").to_string()
+fn clock(t: DateTime) -> String {
+    t.strftime("%-I:%M %p").to_string()
 }
 
-fn short_hour(t: NaiveDateTime) -> String {
+fn short_hour(t: DateTime) -> String {
     match t.hour() {
         0 => "12a".into(),
         12 => "12p".into(),
@@ -236,7 +238,7 @@ fn severity_color(s: Severity) -> Color {
 }
 
 pub(crate) fn alert_until(a: &Alert) -> String {
-    a.until.map(|t| format!(" until {}", t.format("%a %-I:%M %p"))).unwrap_or_default()
+    a.until.as_ref().map(|t| format!(" until {}", t.strftime("%a %-I:%M %p"))).unwrap_or_default()
 }
 
 fn draw_alert_banner(f: &mut Frame, area: Rect, alerts: &[Alert]) {
@@ -267,14 +269,14 @@ fn draw_recent_banner(f: &mut Frame, area: Rect, recent: &[Alert]) {
 
 /// " · ended Thu 8:30 AM", or nothing if the end time isn't known.
 fn alert_ended(a: &Alert) -> String {
-    a.until.map(|t| format!(" · ended {}", t.format("%a %-I:%M %p"))).unwrap_or_default()
+    a.until.as_ref().map(|t| format!(" · ended {}", t.strftime("%a %-I:%M %p"))).unwrap_or_default()
 }
 
 /// An alert's details for the popup: a heading, then its text re-wrapped to the popup.
 fn alert_lines(lines: &mut Vec<Line<'static>>, a: &Alert, ended: bool) {
     let dim = Style::new().dark_gray();
     let (badge, when) = if ended {
-        let sent = a.sent.map(|t| format!(" · sent {}", t.format("%a %-I:%M %p"))).unwrap_or_default();
+        let sent = a.sent.as_ref().map(|t| format!(" · sent {}", t.strftime("%a %-I:%M %p"))).unwrap_or_default();
         (Style::new().fg(severity_color(a.severity)).bold().reversed(), format!(" {:?}{sent}{}", a.severity, alert_ended(a)))
     } else {
         (Style::new().fg(Color::Black).bg(severity_color(a.severity)).bold(), format!(" {:?}{}", a.severity, alert_until(a)))
@@ -327,7 +329,7 @@ fn draw_alert_popup(f: &mut Frame, area: Rect, fc: Option<&Forecast>, scroll: u1
     let recent = fc.map_or(&[][..], |fc| &fc.recent_alerts);
     if !recent.is_empty() {
         lines.push(Line::raw(""));
-        lines.push(Line::styled(format!("Ended in the last {} hours", RECENT_ALERTS.num_hours()), Style::new().bold().underlined()));
+        lines.push(Line::styled(format!("Ended in the last {} hours", RECENT_ALERTS.as_hours()), Style::new().bold().underlined()));
         lines.push(Line::raw(""));
         for (i, a) in recent.iter().enumerate() {
             if i > 0 {
@@ -351,8 +353,8 @@ fn draw_alert_popup(f: &mut Frame, area: Rect, fc: Option<&Forecast>, scroll: u1
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let place = app.place.as_ref().map(|p| p.name.as_str()).unwrap_or("…");
     let date = match &app.status {
-        Status::Ready(fc) => fc.now.format("%A, %B %-d").to_string(),
-        _ => app.last_good.as_ref().map(|fc| fc.now.format("%A, %B %-d").to_string()).unwrap_or_default(),
+        Status::Ready(fc) => fc.now.strftime("%A, %B %-d").to_string(),
+        _ => app.last_good.as_ref().map(|fc| fc.now.strftime("%A, %B %-d").to_string()).unwrap_or_default(),
     };
     let tab = |label: &'static str, screen: Screen| {
         if app.screen == screen {
@@ -418,8 +420,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("updating… ", Style::new().yellow())
     } else if let (Status::Error(e), Some(_)) = (&app.status, &app.last_good) {
         Span::styled(format!("refresh failed: {e} "), Style::new().red())
-    } else if let Some(t) = app.updated {
-        Span::styled(format!("updated {} ", t.format("%-I:%M %p")), Style::new().dark_gray())
+    } else if let Some(t) = &app.updated {
+        Span::styled(format!("updated {} ", t.strftime("%-I:%M %p")), Style::new().dark_gray())
     } else {
         Span::raw("")
     };
@@ -571,7 +573,7 @@ fn draw_now(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
     f.render_widget(Paragraph::new(lines).block(panel("Now")), area);
 }
 
-fn label_time(t: NaiveDateTime) -> Span<'static> {
+fn label_time(t: DateTime) -> Span<'static> {
     Span::styled(format!("as of {}", clock(t)), Style::new().dark_gray())
 }
 
@@ -589,7 +591,7 @@ fn draw_chart(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
     let now_x = fc.now.hour() as f64 + fc.now.minute() as f64 / 60.0;
     let now_line: Vec<(f64, f64)> = (0..=20).map(|i| (now_x, lo + (hi - lo) * i as f64 / 20.0)).collect();
     // Daylight: a bar along the top of the chart from sunrise to sunset.
-    let frac = |t: NaiveDateTime| t.hour() as f64 + t.minute() as f64 / 60.0;
+    let frac = |t: DateTime| t.hour() as f64 + t.minute() as f64 / 60.0;
     let daylight = [(frac(fc.sunrise), hi), (frac(fc.sunset), hi)];
 
     let datasets = vec![
@@ -613,7 +615,7 @@ fn draw_chart(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
     let block = panel("Temperature").title(Line::from(vec![
         Span::styled("━", Style::new().yellow()),
         Span::styled(
-            format!(" daylight {} – {} ", fc.sunrise.format("%-I:%M"), fc.sunset.format("%-I:%M")),
+            format!(" daylight {} – {} ", fc.sunrise.strftime("%-I:%M"), fc.sunset.strftime("%-I:%M")),
             Style::new().dark_gray(),
         ),
     ]));
@@ -693,11 +695,11 @@ fn draw_hourly(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
     }
 }
 
-fn day_name(fc: &Forecast, date: chrono::NaiveDate) -> String {
+fn day_name(fc: &Forecast, date: Date) -> String {
     if date == fc.now.date() {
         "Today".into()
     } else {
-        date.format("%a %-d").to_string()
+        date.strftime("%a %-d").to_string()
     }
 }
 
@@ -757,7 +759,7 @@ fn draw_week(f: &mut Frame, area: Rect, fc: &Forecast, units: Units) {
         let mut c = cells.iter().copied();
         let is_today = day.date == fc.now.date();
         let name_style = if is_today { Style::new().bold().cyan() } else { Style::new().bold() };
-        let weekend = matches!(day.date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
+        let weekend = matches!(day.date.weekday(), Weekday::Saturday | Weekday::Sunday);
         let name_style = if weekend && !is_today { name_style.fg(Color::Gray) } else { name_style };
 
         f.render_widget(Line::styled(day_name(fc, day.date), name_style), c.next().unwrap());
@@ -872,7 +874,7 @@ fn draw_week_chart(f: &mut Frame, area: Rect, fc: &Forecast, _units: Units) {
         .bar_gap(bar_gap)
         .group_gap(group_gap);
     for d in &fc.days {
-        let label = if d.date == fc.now.date() { "Today".to_string() } else { d.date.format("%a").to_string() };
+        let label = if d.date == fc.now.date() { "Today".to_string() } else { d.date.strftime("%a").to_string() };
         let bar = |t: f64, color: Color| {
             Bar::default()
                 .value(height(t))
@@ -907,10 +909,10 @@ fn draw_radar(f: &mut Frame, area: Rect, app: &App) {
     // Title: scan time, how old it is, and where we are in the loop.
     let mut title = vec![Span::styled(" Radar ", Style::new().bold())];
     if let (Some(fr), Some(frames)) = (r.current(), &r.frames) {
-        if let Some(t) = chrono::DateTime::from_timestamp(fr.time, 0) {
-            let local = t.with_timezone(&chrono::Local);
-            let mins = (chrono::Utc::now() - t).num_minutes().max(0);
-            title.push(Span::raw(format!("{} ", local.format("%-I:%M %p"))));
+        if let Ok(t) = Timestamp::from_second(fr.time) {
+            let local = t.to_zoned_datetime(TimeZone::system());
+            let mins = Timestamp::now().duration_since(t).as_mins().max(0);
+            title.push(Span::raw(format!("{} ", local.strftime("%-I:%M %p"))));
             title.push(Span::styled(format!("({mins} min ago) "), dim));
         }
         let state = if r.playing { "▶" } else { "❚❚" };

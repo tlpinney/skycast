@@ -1,6 +1,6 @@
 //! Turns today's hourly precipitation chances into one line, like "Rain likely 3–6p".
 
-use chrono::{NaiveDateTime, Timelike};
+use jiff::civil::DateTime;
 
 use crate::api::Hour;
 
@@ -55,7 +55,7 @@ fn range_label(start: u32, end: u32) -> String {
 }
 
 /// Summarize precipitation for the rest of today (from `now`'s hour on).
-pub fn outlook(hours: &[Hour], now: NaiveDateTime) -> Outlook {
+pub fn outlook(hours: &[Hour], now: DateTime) -> Outlook {
     let rest: Vec<&Hour> = hours.iter().filter(|h| h.time.hour() >= now.hour()).collect();
 
     // Runs of consecutive hours at or above POSSIBLE.
@@ -86,8 +86,8 @@ pub fn outlook(hours: &[Hour], now: NaiveDateTime) -> Outlook {
         .take(MAX_WINDOWS)
         .enumerate()
         .map(|(i, r)| {
-            let start = r[0].time.hour();
-            let end = r[r.len() - 1].time.hour() + 1;
+            let start = r[0].time.hour() as u32;
+            let end = r[r.len() - 1].time.hour() as u32 + 1;
             if i == 0 && starts_now {
                 format!("until {}", hour_label(end))
             } else {
@@ -104,10 +104,9 @@ pub fn outlook(hours: &[Hour], now: NaiveDateTime) -> Outlook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
 
-    fn at(h: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 11, 3).unwrap().and_hms_opt(h, 0, 0).unwrap()
+    fn at(h: i8) -> DateTime {
+        jiff::civil::date(2026, 11, 3).at(h, 0, 0, 0)
     }
 
     /// A day of hours with the given (hour, chance) overrides; everything else is 0% and clear.
@@ -115,7 +114,7 @@ mod tests {
         (0..24)
             .map(|h| {
                 let p = probs.iter().find(|(ph, _)| *ph == h).map(|(_, p)| *p).unwrap_or(0);
-                Hour { time: at(h), temp: 50.0, precip_prob: p, code: if p > 0 { code } else { 0 }, is_day: true, aqi: None }
+                Hour { time: at(h as i8), temp: 50.0, precip_prob: p, code: if p > 0 { code } else { 0 }, is_day: true, aqi: None }
             })
             .collect()
     }

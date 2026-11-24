@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration as StdDuration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use chrono::{Duration, NaiveDate, NaiveDateTime};
+use jiff::civil::{Date, DateTime};
+use jiff::{SignedDuration, ToSpan};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{Place, Units};
@@ -21,12 +22,12 @@ const MAX_STATION_KM: f64 = 80.0;
 const MARINE_RINGS_KM: [f64; 3] = [10.0, 25.0, 50.0];
 /// Consecutive highs and lows are never this far apart (even diurnal tides are ~12–13 h);
 /// a larger gap means bad data, and filling it would build an enormous curve.
-const MAX_EVENT_GAP: Duration = Duration::hours(30);
+const MAX_EVENT_GAP: SignedDuration = SignedDuration::from_hours(30);
 const STATION_CACHE_MAX_AGE: StdDuration = StdDuration::from_secs(30 * 24 * 3600);
 
 #[derive(Debug, Clone)]
 pub struct TideEvent {
-    pub time: NaiveDateTime,
+    pub time: DateTime,
     pub height: f64,
     pub high: bool,
 }
@@ -45,22 +46,22 @@ pub struct Tides {
     /// Highs and lows, oldest first, covering at least yesterday through tomorrow.
     pub events: Vec<TideEvent>,
     /// Heights every 10 minutes over the same span, in local time at the place.
-    pub curve: Vec<(NaiveDateTime, f64)>,
+    pub curve: Vec<(DateTime, f64)>,
 }
 
 impl Tides {
     /// Interpolated height at `t`, if inside the curve.
-    pub fn height_at(&self, t: NaiveDateTime) -> Option<f64> {
+    pub fn height_at(&self, t: DateTime) -> Option<f64> {
         let i = self.curve.iter().position(|(ct, _)| *ct > t)?;
         if i == 0 {
             return None;
         }
         let ((t0, h0), (t1, h1)) = (self.curve[i - 1], self.curve[i]);
-        let f = (t - t0).num_seconds() as f64 / (t1 - t0).num_seconds().max(1) as f64;
+        let f = t.duration_since(t0).as_secs() as f64 / t1.duration_since(t0).as_secs().max(1) as f64;
         Some(h0 + (h1 - h0) * f)
     }
 
-    pub fn next_events(&self, t: NaiveDateTime) -> impl Iterator<Item = &TideEvent> {
+    pub fn next_events(&self, t: DateTime) -> impl Iterator<Item = &TideEvent> {
         self.events.iter().filter(move |e| e.time > t)
     }
 }
@@ -82,7 +83,7 @@ pub fn distance_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 }
 
 /// Tides for the place over yesterday..=tomorrow (local), or None if there's no coast nearby.
-pub fn fetch(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Tides>> {
+pub fn fetch(place: &Place, units: Units, today: Date) -> Result<Option<Tides>> {
     if let Some(t) = fetch_noaa(place, units, today)? {
         return Ok(Some(t));
     }
@@ -171,7 +172,7 @@ struct NoaaPoint {
     kind: Option<String>,
 }
 
-fn fetch_noaa(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Tides>> {
+fn fetch_noaa(place: &Place, units: Units, today: Date) -> Result<Option<Tides>> {
     let stations = stations()?;
     let Some((st, km)) = stations
         .iter()
@@ -188,13 +189,13 @@ fn fetch_noaa(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Ti
         bail!("unexpected NOAA station id {:?}", st.id);
     }
 
-    let begin = today - Duration::days(1);
+    let begin = today - 1.days();
     let resp: NoaaPredictions = client()?
         .get(NOAA_DATA_URL)
         .query(&[
             ("product", "predictions"),
             ("application", "skycast"),
-            ("begin_date", &begin.format("%Y%m%d").to_string()),
+            ("begin_date", &begin.strftime("%Y%m%d").to_string()),
             ("range", "96"),
             ("datum", "MLLW"),
             ("station", &st.id),
@@ -216,7 +217,7 @@ fn fetch_noaa(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Ti
         .into_iter()
         .filter_map(|p| {
             Some(TideEvent {
-                time: NaiveDateTime::parse_from_str(&p.t, "%Y-%m-%d %H:%M").ok()?,
+                time: DateTime::strptime("%Y-%m-%d %H:%M", &p.t).ok()?,
                 height: p.v.trim().parse().ok()?,
                 high: p.kind.as_deref()? == "H",
             })
@@ -260,20 +261,20 @@ fn title_case(s: &str) -> String {
 
 /// A smooth curve through alternating highs and lows (half-cosine between each pair),
 /// sampled every 10 minutes. This is how tide tables are usually drawn between extremes.
-pub fn curve_from_events(events: &[TideEvent]) -> Vec<(NaiveDateTime, f64)> {
+pub fn curve_from_events(events: &[TideEvent]) -> Vec<(DateTime, f64)> {
     let mut out = Vec::new();
     for pair in events.windows(2) {
         let (a, b) = (&pair[0], &pair[1]);
-        if b.time <= a.time || b.time - a.time > MAX_EVENT_GAP {
+        if b.time <= a.time || b.time.duration_since(a.time) > MAX_EVENT_GAP {
             continue;
         }
-        let span = (b.time - a.time).num_seconds() as f64;
+        let span = b.time.duration_since(a.time).as_secs() as f64;
         let mut t = a.time;
         while t < b.time {
-            let f = (t - a.time).num_seconds() as f64 / span;
+            let f = t.duration_since(a.time).as_secs() as f64 / span;
             let h = a.height + (b.height - a.height) * (1.0 - (std::f64::consts::PI * f).cos()) / 2.0;
             out.push((t, h));
-            t += Duration::minutes(10);
+            t += SignedDuration::from_mins(10);
         }
     }
     if let Some(last) = events.last() {
@@ -311,7 +312,7 @@ fn ring_points(lat: f64, lon: f64) -> Vec<(f64, f64)> {
     pts
 }
 
-fn fetch_marine(place: &Place, units: Units, today: NaiveDate) -> Result<Option<Tides>> {
+fn fetch_marine(place: &Place, units: Units, today: Date) -> Result<Option<Tides>> {
     let pts = ring_points(place.lat, place.lon);
     let join = |f: fn(&(f64, f64)) -> f64| pts.iter().map(|p| format!("{:.4}", f(p))).collect::<Vec<_>>().join(",");
     let resp: Vec<MarinePoint> = client()?
@@ -342,12 +343,12 @@ fn fetch_marine(place: &Place, units: Units, today: NaiveDate) -> Result<Option<
     };
     let h = p.hourly.as_ref().unwrap();
     let scale = if units == Units::Imperial { 3.280_84 } else { 1.0 };
-    let hourly: Vec<(NaiveDateTime, f64)> = h
+    let hourly: Vec<(DateTime, f64)> = h
         .time
         .iter()
         .zip(&h.sea_level_height_msl)
-        .filter_map(|(t, v)| Some((NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M").ok()?, (*v)? * scale)))
-        .filter(|(t, _)| t.date() >= today - Duration::days(1) && t.date() <= today + Duration::days(2))
+        .filter_map(|(t, v)| Some((DateTime::strptime("%Y-%m-%dT%H:%M", t).ok()?, (*v)? * scale)))
+        .filter(|(t, _)| t.date() >= today - 1.days() && t.date() <= today + (2).days())
         .collect();
     let events = extremes(&hourly);
     if events.len() < 2 {
@@ -366,7 +367,7 @@ fn fetch_marine(place: &Place, units: Units, today: NaiveDate) -> Result<Option<
 
 /// Highs and lows of an hourly series, with times refined by fitting a parabola through
 /// each extreme and its neighbours.
-pub fn extremes(series: &[(NaiveDateTime, f64)]) -> Vec<TideEvent> {
+pub fn extremes(series: &[(DateTime, f64)]) -> Vec<TideEvent> {
     let mut out = Vec::new();
     for w in series.windows(3) {
         let ((_, a), (t, b), (_, c)) = (w[0], w[1], w[2]);
@@ -382,22 +383,22 @@ pub fn extremes(series: &[(NaiveDateTime, f64)]) -> Vec<TideEvent> {
         } else {
             (0.0, b)
         };
-        out.push(TideEvent { time: t + Duration::seconds((shift * 3600.0) as i64), height: peak, high });
+        out.push(TideEvent { time: t + SignedDuration::from_secs((shift * 3600.0) as i64), height: peak, high });
     }
     out
 }
 
 /// Linear resample of an hourly series to 10-minute steps.
-fn resample(series: &[(NaiveDateTime, f64)]) -> Vec<(NaiveDateTime, f64)> {
+fn resample(series: &[(DateTime, f64)]) -> Vec<(DateTime, f64)> {
     let mut out = Vec::new();
     for w in series.windows(2) {
         let ((t0, h0), (t1, h1)) = (w[0], w[1]);
-        let span = (t1 - t0).num_seconds() as f64;
+        let span = t1.duration_since(t0).as_secs() as f64;
         let mut t = t0;
         while t < t1 {
-            let f = (t - t0).num_seconds() as f64 / span;
+            let f = t.duration_since(t0).as_secs() as f64 / span;
             out.push((t, h0 + (h1 - h0) * f));
-            t += Duration::minutes(10);
+            t += SignedDuration::from_mins(10);
         }
     }
     if let Some(&last) = series.last() {
@@ -410,8 +411,8 @@ fn resample(series: &[(NaiveDateTime, f64)]) -> Vec<(NaiveDateTime, f64)> {
 mod tests {
     use super::*;
 
-    fn at(d: u32, h: u32, m: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 11, d).unwrap().and_hms_opt(h, m, 0).unwrap()
+    fn at(d: i8, h: i8, m: i8) -> DateTime {
+        jiff::civil::date(2026, 11, d).at(h, m, 0, 0)
     }
 
     #[test]
@@ -438,7 +439,7 @@ mod tests {
             events: ev,
             curve: c,
         };
-        assert!((tides.height_at(at(3, 2, 22) + Duration::seconds(1)).unwrap() - 2.8).abs() < 0.01);
+        assert!((tides.height_at(at(3, 2, 22) + SignedDuration::from_secs(1)).unwrap() - 2.8).abs() < 0.01);
         let mid = tides.height_at(at(3, 6, 2)).unwrap();
         assert!((mid - 1.6).abs() < 0.05, "{mid}");
         assert!(tides.height_at(at(3, 1, 0)).is_none());
@@ -448,7 +449,7 @@ mod tests {
     #[test]
     fn curve_skips_implausible_gaps() {
         // Events years apart (bad data) must not be filled with 10-minute points.
-        let far = at(3, 0, 0) + Duration::days(3650);
+        let far = at(3, 0, 0) + (3650).days();
         let ev = vec![
             TideEvent { time: at(3, 2, 0), height: 2.0, high: true },
             TideEvent { time: at(3, 8, 0), height: 0.0, high: false },
@@ -465,7 +466,7 @@ mod tests {
             .collect();
         let ev = extremes(&series);
         assert_eq!(ev.iter().map(|e| e.high).collect::<Vec<_>>(), vec![true, false, true, false]);
-        let first = (ev[0].time - at(3, 3, 6)).num_minutes().abs();
+        let first = ev[0].time.duration_since(at(3, 3, 6)).as_mins().abs();
         assert!(first <= 6, "high at {}", ev[0].time);
     }
 
