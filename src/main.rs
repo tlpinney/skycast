@@ -16,7 +16,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Local};
+use jiff::ZonedDateTime;
+use jiff::civil::Date;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 
@@ -197,20 +198,20 @@ pub struct TideState {
     pub data: Option<Option<tides::Tides>>,
     pub error: Option<String>,
     pub pending: bool,
-    fetched_for: Option<chrono::NaiveDate>,
+    fetched_for: Option<Date>,
 }
 
 enum RadarReq {
     Frames,
     Tile(String, radar::TileKey),
-    Tides(Place, Units, chrono::NaiveDate),
+    Tides(Place, Units, Date),
     Search(u64, String),
 }
 
 enum RadarResp {
     Frames(Result<radar::Frames, String>),
     Tile(radar::TileKey, Result<radar::Tile, String>),
-    Tides(chrono::NaiveDate, Result<Option<tides::Tides>, String>),
+    Tides(Date, Result<Option<tides::Tides>, String>),
     Search(u64, Result<Vec<api::PlaceMatch>, String>),
 }
 
@@ -409,7 +410,7 @@ pub struct App {
     pub status: Status,
     /// Kept so a failed refresh still shows the last good forecast.
     pub last_good: Option<Box<Forecast>>,
-    pub updated: Option<DateTime<Local>>,
+    pub updated: Option<ZonedDateTime>,
     pub fetching: bool,
     /// A one-off message for the footer.
     pub notice: Option<String>,
@@ -544,7 +545,7 @@ fn main() -> Result<()> {
                         let f = Box::new(forecast);
                         app.last_good = Some(f.clone());
                         app.status = Status::Ready(f);
-                        app.updated = Some(Local::now());
+                        app.updated = Some(ZonedDateTime::now());
                     }
                     Err(e) => app.status = Status::Error(e),
                 }

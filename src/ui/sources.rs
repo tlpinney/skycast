@@ -1,7 +1,6 @@
 //! The Sources popup (`?`): where skycast's data comes from, with the credit each source
 //! asks for.
 
-use chrono::Datelike;
 use ratatui::{
     Frame,
     layout::{Margin, Rect},
@@ -18,7 +17,7 @@ struct Source {
 }
 
 fn sources() -> Vec<Source> {
-    let year = chrono::Utc::now().year();
+    let year = jiff::ZonedDateTime::now().year();
     vec![
         Source {
             what: "Forecast, place search and model tides",

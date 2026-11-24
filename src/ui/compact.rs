@@ -1,7 +1,6 @@
 //! Layouts for short panes: a dense Today view when the full one doesn't fit, and a
 //! 1–3 line strip (no header or footer) for very thin panes.
 
-use chrono::Timelike;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -59,8 +58,8 @@ fn today_line(fc: &Forecast, units: Units) -> Line<'static> {
         Span::raw(format!(" {}", wmo::describe(fc.day_code))),
         dim(format!(
             "{SEP}↑{} ↓{}",
-            fc.sunrise.format("%-I:%M"),
-            fc.sunset.format("%-I:%M")
+            fc.sunrise.strftime("%-I:%M"),
+            fc.sunset.strftime("%-I:%M")
         )),
     ])
 }
@@ -137,7 +136,7 @@ fn week_line(fc: &Forecast, units: Units, width: u16) -> Line<'static> {
             break;
         }
         used += cell;
-        spans.push(dim(format!("{} ", d.date.format("%a"))));
+        spans.push(dim(format!("{} ", d.date.strftime("%a"))));
         spans.push(Span::styled(wmo::icon(d.code, true), Style::new().fg(wmo::color(d.code))));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(format!("{:.0}", d.high), Style::new().fg(temp_color(d.high, units))));

@@ -2,7 +2,9 @@
 //! low-precision lunar longitude (Meeus, *Astronomical Algorithms*, ch. 25 and 47).
 //! Good to about a minute for sun events and well under an hour for moon phases.
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use jiff::civil::{Date, DateTime, Time};
+use jiff::tz::Offset;
+use jiff::{SignedDuration, Timestamp};
 
 const SYNODIC_MONTH: f64 = 29.530_588_853;
 
@@ -13,18 +15,23 @@ fn cos_d(x: f64) -> f64 {
     x.to_radians().cos()
 }
 
-fn julian_day(utc: DateTime<Utc>) -> f64 {
-    utc.timestamp() as f64 / 86_400.0 + 2_440_587.5
+/// A wall-clock time read as UTC. Panics only outside jiff's range (years ±9999).
+pub fn utc(dt: DateTime) -> Timestamp {
+    Offset::UTC.to_timestamp(dt).expect("datetime in range")
+}
+
+fn julian_day(utc: Timestamp) -> f64 {
+    utc.as_second() as f64 / 86_400.0 + 2_440_587.5
 }
 
 /// Julian centuries since J2000.0.
-fn century(utc: DateTime<Utc>) -> f64 {
+fn century(utc: Timestamp) -> f64 {
     (julian_day(utc) - 2_451_545.0) / 36_525.0
 }
 
 /// The sun's declination (degrees), apparent longitude (degrees) and the equation of
 /// time (minutes) at the given instant.
-fn sun_terms(utc: DateTime<Utc>) -> (f64, f64, f64) {
+fn sun_terms(utc: Timestamp) -> (f64, f64, f64) {
     let t = century(utc);
     let l0 = (280.466_46 + t * (36_000.769_83 + t * 0.000_303_2)).rem_euclid(360.0);
     let m = 357.529_11 + t * (35_999.050_29 - 0.000_153_7 * t);
@@ -54,9 +61,9 @@ pub struct SunPosition {
     pub azimuth: f64,
 }
 
-pub fn sun_position(utc: DateTime<Utc>, lat: f64, lon: f64) -> SunPosition {
+pub fn sun_position(utc: Timestamp, lat: f64, lon: f64) -> SunPosition {
     let (decl, _, eq_time) = sun_terms(utc);
-    let minutes = utc.time().signed_duration_since(NaiveTime::MIN).num_seconds() as f64 / 60.0;
+    let minutes = Offset::UTC.to_datetime(utc).time().duration_since(Time::midnight()).as_secs() as f64 / 60.0;
     let true_solar = (minutes + eq_time + 4.0 * lon).rem_euclid(1440.0);
     let hour_angle = true_solar / 4.0 - 180.0;
     let cos_zen = (sin_d(lat) * sin_d(decl) + cos_d(lat) * cos_d(decl) * cos_d(hour_angle)).clamp(-1.0, 1.0);
@@ -93,13 +100,13 @@ fn refraction(elev: f64) -> f64 {
 /// never crosses that day (midnight sun or polar night for that elevation).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Crossing {
-    pub up: Option<NaiveDateTime>,
-    pub down: Option<NaiveDateTime>,
+    pub up: Option<DateTime>,
+    pub down: Option<DateTime>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct SunDay {
-    pub noon: NaiveDateTime,
+    pub noon: DateTime,
     pub noon_elevation: f64,
     /// Sunrise / sunset (upper limb at the horizon with refraction: −0.833°).
     pub sun: Crossing,
@@ -113,26 +120,26 @@ pub struct SunDay {
 
 impl SunDay {
     /// Length of daylight, or None for polar night; 24 h for midnight sun.
-    pub fn day_length(&self) -> Option<Duration> {
+    pub fn day_length(&self) -> Option<SignedDuration> {
         match (self.sun.up, self.sun.down) {
-            (Some(u), Some(d)) => Some(d - u),
-            _ if self.noon_elevation > 0.0 => Some(Duration::hours(24)),
+            (Some(u), Some(d)) => Some(d.duration_since(u)),
+            _ if self.noon_elevation > 0.0 => Some(SignedDuration::from_hours(24)),
             _ => None,
         }
     }
 }
 
 /// Sun events for a local calendar date at a place, given the place's UTC offset.
-pub fn sun_day(date: NaiveDate, lat: f64, lon: f64, utc_offset_secs: i32) -> SunDay {
-    let offset = Duration::seconds(utc_offset_secs as i64);
-    let local_midnight = date.and_time(NaiveTime::MIN);
+pub fn sun_day(date: Date, lat: f64, lon: f64, utc_offset_secs: i32) -> SunDay {
+    let offset = SignedDuration::from_secs(utc_offset_secs as i64);
+    let local_midnight = date.to_datetime(Time::midnight());
     // Evaluate declination and equation of time near local noon.
-    let noon_guess = (local_midnight + Duration::hours(12) - offset).and_utc();
+    let noon_guess = utc(local_midnight + SignedDuration::from_hours(12) - offset);
     let (decl, _, eq_time) = sun_terms(noon_guess);
     // Solar noon in minutes after UTC midnight of `date`, then shifted to local.
     let noon_utc_min = 720.0 - 4.0 * lon - eq_time;
     let to_local = |utc_min: f64| {
-        local_midnight + Duration::milliseconds((utc_min * 60_000.0).round() as i64) + offset
+        local_midnight + SignedDuration::from_millis((utc_min * 60_000.0).round() as i64) + offset
     };
     let noon = to_local(noon_utc_min);
     let noon_elevation = 90.0 - (lat - decl).abs();
@@ -170,7 +177,7 @@ fn moon_args(t: f64) -> (f64, f64, f64, f64, f64) {
 }
 
 /// The moon's ecliptic longitude in degrees (main periodic terms only).
-fn moon_longitude(utc: DateTime<Utc>) -> f64 {
+fn moon_longitude(utc: Timestamp) -> f64 {
     let (l, d, m, mp, f) = moon_args(century(utc));
     let lon = l + 6.288_774 * sin_d(mp) + 1.274_027 * sin_d(2.0 * d - mp) + 0.658_314 * sin_d(2.0 * d)
         + 0.213_618 * sin_d(2.0 * mp)
@@ -187,7 +194,7 @@ fn moon_longitude(utc: DateTime<Utc>) -> f64 {
 }
 
 /// The moon's ecliptic latitude (degrees) and distance from Earth's center (km).
-fn moon_latitude_distance(utc: DateTime<Utc>) -> (f64, f64) {
+fn moon_latitude_distance(utc: Timestamp) -> (f64, f64) {
     let (_, d, m, mp, f) = moon_args(century(utc));
     let beta = 5.128_122 * sin_d(f) + 0.280_602 * sin_d(mp + f) + 0.277_693 * sin_d(mp - f)
         + 0.173_237 * sin_d(2.0 * d - f)
@@ -212,7 +219,7 @@ fn moon_latitude_distance(utc: DateTime<Utc>) -> (f64, f64) {
 }
 
 /// Greenwich mean sidereal time, degrees.
-fn sidereal_deg(utc: DateTime<Utc>) -> f64 {
+fn sidereal_deg(utc: Timestamp) -> f64 {
     let jd = julian_day(utc);
     let t = (jd - 2_451_545.0) / 36_525.0;
     (280.460_618_37 + 360.985_647_366_29 * (jd - 2_451_545.0) + 0.000_387_933 * t * t - t * t * t / 38_710_000.0)
@@ -221,7 +228,7 @@ fn sidereal_deg(utc: DateTime<Utc>) -> f64 {
 
 /// How far the moon's upper limb is above the horizon, in degrees, accounting for parallax,
 /// the moon's semi-diameter and refraction. Zero is moonrise/moonset.
-pub fn moon_altitude(utc: DateTime<Utc>, lat: f64, lon: f64) -> f64 {
+pub fn moon_altitude(utc: Timestamp, lat: f64, lon: f64) -> f64 {
     let lambda = moon_longitude(utc);
     let (beta, dist) = moon_latitude_distance(utc);
     let eps = 23.439_291 - 0.013_004_2 * century(utc);
@@ -238,29 +245,29 @@ pub fn moon_altitude(utc: DateTime<Utc>, lat: f64, lon: f64) -> f64 {
 /// about 50 minutes later each day, so roughly once a month a day has no rise (or no set).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoonDay {
-    pub rise: Option<NaiveDateTime>,
-    pub set: Option<NaiveDateTime>,
+    pub rise: Option<DateTime>,
+    pub set: Option<DateTime>,
 }
 
-pub fn moon_day(date: NaiveDate, lat: f64, lon: f64, utc_offset_secs: i32) -> MoonDay {
-    let offset = Duration::seconds(utc_offset_secs as i64);
-    let start = date.and_time(NaiveTime::MIN);
-    let alt = |local: NaiveDateTime| moon_altitude((local - offset).and_utc(), lat, lon);
-    let step = Duration::minutes(10);
+pub fn moon_day(date: Date, lat: f64, lon: f64, utc_offset_secs: i32) -> MoonDay {
+    let offset = SignedDuration::from_secs(utc_offset_secs as i64);
+    let start = date.to_datetime(Time::midnight());
+    let alt = |local: DateTime| moon_altitude(utc(local - offset), lat, lon);
+    let step = SignedDuration::from_mins(10);
     let (mut rise, mut set) = (None, None);
     let mut t = start;
     let mut a = alt(t);
-    while t < start + Duration::days(1) {
+    while t < start + SignedDuration::from_hours(24) {
         let next = t + step;
         let b = alt(next);
         if (a < 0.0) != (b < 0.0) {
             // Narrow the crossing down to a few seconds.
             let (mut lo, mut hi) = (t, next);
             for _ in 0..8 {
-                let mid = lo + (hi - lo) / 2;
+                let mid = lo + hi.duration_since(lo) / 2;
                 if (alt(mid) < 0.0) == (a < 0.0) { lo = mid } else { hi = mid }
             }
-            let when = lo + (hi - lo) / 2;
+            let when = lo + hi.duration_since(lo) / 2;
             if when.date() == date {
                 if a < 0.0 { rise = rise.or(Some(when)) } else { set = set.or(Some(when)) }
             }
@@ -272,7 +279,7 @@ pub fn moon_day(date: NaiveDate, lat: f64, lon: f64, utc_offset_secs: i32) -> Mo
 }
 
 /// Moon minus sun longitude, 0..360: 0 new, 90 first quarter, 180 full, 270 last quarter.
-fn elongation(utc: DateTime<Utc>) -> f64 {
+fn elongation(utc: Timestamp) -> f64 {
     let (_, sun_long, _) = sun_terms(utc);
     (moon_longitude(utc) - sun_long).rem_euclid(360.0)
 }
@@ -285,20 +292,20 @@ pub struct MoonPhase {
     pub illumination: f64,
     pub name: &'static str,
     pub icon: &'static str,
-    pub next_new: DateTime<Utc>,
-    pub next_full: DateTime<Utc>,
+    pub next_new: Timestamp,
+    pub next_full: Timestamp,
 }
 
 /// Next time after `from` when the elongation reaches `target` degrees.
-fn next_elongation(from: DateTime<Utc>, target: f64) -> DateTime<Utc> {
-    let behind = |t: DateTime<Utc>| (target - elongation(t)).rem_euclid(360.0);
+fn next_elongation(from: Timestamp, target: f64) -> Timestamp {
+    let behind = |t: Timestamp| (target - elongation(t)).rem_euclid(360.0);
     // The moon gains ~12.2° a day on the sun; jump close, then refine by bisection.
-    let mut t = from + Duration::minutes((behind(from) / 12.19 * 1440.0) as i64 - 12 * 60);
+    let mut t = from + SignedDuration::from_mins((behind(from) / 12.19 * 1440.0) as i64 - 12 * 60);
     if t < from {
         t = from;
     }
     // Step until we pass the target (behind() jumps from ~0 to ~360), then bisect.
-    let step = Duration::hours(2);
+    let step = SignedDuration::from_hours(2);
     let mut prev = behind(t);
     for _ in 0..(40 * 12) {
         let next = t + step;
@@ -306,10 +313,10 @@ fn next_elongation(from: DateTime<Utc>, target: f64) -> DateTime<Utc> {
         if b > prev + 180.0 {
             let (mut lo, mut hi) = (t, next);
             for _ in 0..20 {
-                let mid = lo + (hi - lo) / 2;
+                let mid = lo + hi.duration_since(lo) / 2;
                 if behind(mid) > 180.0 { hi = mid } else { lo = mid }
             }
-            return lo + (hi - lo) / 2;
+            return lo + hi.duration_since(lo) / 2;
         }
         t = next;
         prev = b;
@@ -317,7 +324,7 @@ fn next_elongation(from: DateTime<Utc>, target: f64) -> DateTime<Utc> {
     t
 }
 
-pub fn moon_phase(utc: DateTime<Utc>) -> MoonPhase {
+pub fn moon_phase(utc: Timestamp) -> MoonPhase {
     let e = elongation(utc);
     let phase = e / 360.0;
     let illumination = (1.0 - cos_d(e)) / 2.0;
@@ -350,25 +357,26 @@ pub fn synodic_month() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use jiff::ToSpan;
+    use jiff::civil::date;
 
-    fn hm(t: Option<NaiveDateTime>) -> String {
-        t.map(|t| t.format("%H:%M").to_string()).unwrap_or_default()
+    fn hm(t: Option<DateTime>) -> String {
+        t.map(|t| t.strftime("%H:%M").to_string()).unwrap_or_default()
     }
 
-    fn close(t: Option<NaiveDateTime>, expect: &str, minutes: i64) -> bool {
+    fn close(t: Option<DateTime>, expect: &str, minutes: i64) -> bool {
         let t = t.expect("event");
-        let e = NaiveDateTime::parse_from_str(&format!("{} {expect}", t.date()), "%Y-%m-%d %H:%M").unwrap();
-        (t - e).num_seconds().abs() <= minutes * 60 + 59
+        let e = DateTime::strptime("%Y-%m-%d %H:%M", format!("{} {expect}", t.date())).unwrap();
+        t.duration_since(e).as_secs().abs() <= minutes * 60 + 59
     }
 
     #[test]
     fn herndon_matches_open_meteo() {
         // Open-Meteo: 2026-11-03 sunrise 06:39, sunset 17:06, daylight 10:27:28, UTC-5.
-        let d = sun_day(NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(), 38.96955, -77.3861, -18_000);
+        let d = sun_day(date(2026, 11, 3), 38.96955, -77.3861, -18_000);
         assert!(close(d.sun.up, "06:39", 1), "sunrise {}", hm(d.sun.up));
         assert!(close(d.sun.down, "17:06", 1), "sunset {}", hm(d.sun.down));
-        let len = d.day_length().unwrap().num_seconds();
+        let len = d.day_length().unwrap().as_secs();
         assert!((len - 37_648).abs() < 120, "day length {len}");
         // Twilights are ordered outward from the horizon.
         assert!(d.astronomical.up < d.nautical.up && d.nautical.up < d.civil.up && d.civil.up < d.sun.up);
@@ -377,28 +385,28 @@ mod tests {
     #[test]
     fn sydney_matches_open_meteo() {
         // Open-Meteo: 2026-11-04 sunrise 05:52, sunset 19:25, UTC+11.
-        let d = sun_day(NaiveDate::from_ymd_opt(2026, 11, 4).unwrap(), -33.87, 151.21, 39_600);
+        let d = sun_day(date(2026, 11, 4), -33.87, 151.21, 39_600);
         assert!(close(d.sun.up, "05:52", 1), "sunrise {}", hm(d.sun.up));
         assert!(close(d.sun.down, "19:25", 1), "sunset {}", hm(d.sun.down));
     }
 
     #[test]
     fn polar_night_and_midnight_sun() {
-        let winter = sun_day(NaiveDate::from_ymd_opt(2026, 12, 21).unwrap(), 78.22, 15.65, 3_600);
+        let winter = sun_day(date(2026, 12, 21), 78.22, 15.65, 3_600);
         assert_eq!(winter.sun, Crossing { up: None, down: None });
         assert!(winter.day_length().is_none());
-        let summer = sun_day(NaiveDate::from_ymd_opt(2026, 6, 21).unwrap(), 78.22, 15.65, 7_200);
-        assert_eq!(summer.day_length(), Some(Duration::hours(24)));
+        let summer = sun_day(date(2026, 6, 21), 78.22, 15.65, 7_200);
+        assert_eq!(summer.day_length(), Some(SignedDuration::from_hours(24)));
     }
 
     #[test]
     fn position_peaks_at_solar_noon() {
-        let d = sun_day(NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(), 38.96955, -77.3861, -18_000);
-        let noon_utc = (d.noon + Duration::hours(5)).and_utc();
+        let d = sun_day(date(2026, 11, 3), 38.96955, -77.3861, -18_000);
+        let noon_utc = utc(d.noon + SignedDuration::from_hours(5));
         let p = sun_position(noon_utc, 38.96955, -77.3861);
         assert!((p.elevation - d.noon_elevation).abs() < 0.3, "{} vs {}", p.elevation, d.noon_elevation);
         assert!((p.azimuth - 180.0).abs() < 2.0, "azimuth {}", p.azimuth);
-        let morning = sun_position(noon_utc - Duration::hours(3), 38.96955, -77.3861);
+        let morning = sun_position(noon_utc - SignedDuration::from_hours(3), 38.96955, -77.3861);
         assert!(morning.azimuth < 180.0 && morning.elevation < p.elevation);
     }
 
@@ -412,7 +420,7 @@ mod tests {
             ((2024, 4, 8), 38.96955, -77.3861, -4, "06:37", "19:52"),
         ];
         for ((y, m, d), lat, lon, tz, rise, set) in cases {
-            let date = NaiveDate::from_ymd_opt(y, m, d).unwrap();
+            let date = date(y, m, d);
             let md = moon_day(date, lat, lon, tz * 3600);
             assert!(close(md.rise, rise, 3), "{date} rise {} (USNO {rise})", hm(md.rise));
             assert!(close(md.set, set, 3), "{date} set {} (USNO {set})", hm(md.set));
@@ -422,9 +430,9 @@ mod tests {
     #[test]
     fn some_day_each_month_has_no_moonrise() {
         // The moon rises ~50 min later each day, so over a lunar month one day is skipped.
-        let start = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let start = date(2026, 11, 1);
         let missing = (0..30)
-            .filter(|i| moon_day(start + Duration::days(*i), 38.96955, -77.3861, -18_000).rise.is_none())
+            .filter(|&i| moon_day(start + i.days(), 38.96955, -77.3861, -18_000).rise.is_none())
             .count();
         assert_eq!(missing, 1);
     }
@@ -432,14 +440,14 @@ mod tests {
     #[test]
     fn moon_phases_match_known_events() {
         // New moon of the 2024-04-08 total eclipse, 18:21 UTC.
-        let new = Utc.with_ymd_and_hms(2024, 4, 8, 18, 21, 0).unwrap();
-        let found = next_elongation(new - Duration::days(3), 0.0);
-        assert!((found - new).num_minutes().abs() < 60, "new moon {found}");
+        let new = utc(date(2024, 4, 8).at(18, 21, 0, 0));
+        let found = next_elongation(new - SignedDuration::from_hours(3 * 24), 0.0);
+        assert!(found.duration_since(new).as_mins().abs() < 60, "new moon {found}");
         assert_eq!(moon_phase(new).name, "New moon");
         // Full moon of 2024-03-25, 07:00 UTC.
-        let full = Utc.with_ymd_and_hms(2024, 3, 25, 7, 0, 0).unwrap();
-        let found = next_elongation(full - Duration::days(10), 180.0);
-        assert!((found - full).num_minutes().abs() < 60, "full moon {found}");
+        let full = utc(date(2024, 3, 25).at(7, 0, 0, 0));
+        let found = next_elongation(full - SignedDuration::from_hours(10 * 24), 180.0);
+        assert!(found.duration_since(full).as_mins().abs() < 60, "full moon {found}");
         let m = moon_phase(full);
         assert_eq!(m.name, "Full moon");
         assert!(m.illumination > 0.99);

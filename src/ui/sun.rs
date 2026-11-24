@@ -1,6 +1,8 @@
 //! Sun screen: today's sun events, the moon, the sun's path, and daylight through the year.
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike, Utc};
+use jiff::civil::{Date, DateTime, Time, date};
+use jiff::tz::Offset;
+use jiff::{SignedDuration, Timestamp, ToSpan};
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
@@ -22,21 +24,21 @@ fn dim(s: impl Into<String>) -> Span<'static> {
     Span::styled(s.into(), Style::new().dark_gray())
 }
 
-fn clock(t: Option<NaiveDateTime>) -> String {
-    t.map_or("—".into(), |t| t.format("%-I:%M %p").to_string())
+fn clock(t: Option<DateTime>) -> String {
+    t.map_or("—".into(), |t| t.strftime("%-I:%M %p").to_string())
 }
 
-fn short_clock(t: Option<NaiveDateTime>) -> String {
-    t.map_or("—".into(), |t| t.format("%-I:%M").to_string())
+fn short_clock(t: Option<DateTime>) -> String {
+    t.map_or("—".into(), |t| t.strftime("%-I:%M").to_string())
 }
 
-fn hm(d: Duration) -> String {
-    format!("{}h {:02}m", d.num_hours(), d.num_minutes() % 60)
+fn hm(d: SignedDuration) -> String {
+    format!("{}h {:02}m", d.as_hours(), d.as_mins() % 60)
 }
 
 /// "+2m 04s" / "−1m 58s".
-fn signed_ms(d: Duration) -> String {
-    let s = d.num_seconds();
+fn signed_ms(d: SignedDuration) -> String {
+    let s = d.as_secs();
     let sign = if s < 0 { "−" } else { "+" };
     format!("{sign}{}m {:02}s", s.abs() / 60, s.abs() % 60)
 }
@@ -46,19 +48,19 @@ fn pair(c: Crossing) -> String {
 }
 
 /// The place's local time right now.
-fn local_now(fc: &Forecast) -> NaiveDateTime {
-    (Utc::now() + Duration::seconds(fc.utc_offset_secs as i64)).naive_utc()
+fn local_now(fc: &Forecast) -> DateTime {
+    Offset::UTC.to_datetime(Timestamp::now() + SignedDuration::from_secs(fc.utc_offset_secs as i64))
 }
 
-fn to_utc(fc: &Forecast, local: NaiveDateTime) -> chrono::DateTime<Utc> {
-    (local - Duration::seconds(fc.utc_offset_secs as i64)).and_utc()
+fn to_utc(fc: &Forecast, local: DateTime) -> Timestamp {
+    solar::utc(local - SignedDuration::from_secs(fc.utc_offset_secs as i64))
 }
 
 pub fn draw(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place) {
     let now = local_now(fc);
     let today = now.date();
     let day = solar::sun_day(today, place.lat, place.lon, fc.utc_offset_secs);
-    let yesterday = solar::sun_day(today - Duration::days(1), place.lat, place.lon, fc.utc_offset_secs);
+    let yesterday = solar::sun_day(today - 1.days(), place.lat, place.lon, fc.utc_offset_secs);
 
     if area.height < 10 {
         let moon = solar::moon_day(today, place.lat, place.lon, fc.utc_offset_secs);
@@ -105,7 +107,7 @@ fn draw_sun_panel(
     place: &Place,
     day: &SunDay,
     yesterday: &SunDay,
-    now: NaiveDateTime,
+    now: DateTime,
 ) {
     let pos = solar::sun_position(to_utc(fc, now), place.lat, place.lon);
     let (state, color) = sun_state(pos.elevation);
@@ -156,8 +158,8 @@ fn draw_sun_panel(
     f.render_widget(Paragraph::new(lines).block(panel("Sun")), area);
 }
 
-fn draw_moon_panel(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: NaiveDate) {
-    let m = solar::moon_phase(Utc::now());
+fn draw_moon_panel(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: Date) {
+    let m = solar::moon_phase(Timestamp::now());
     let md = solar::moon_day(today, place.lat, place.lon, fc.utc_offset_secs);
     // A day without a rise (or set) happens about once a month; say so instead of a dash.
     let rise_set = Line::from(vec![
@@ -166,8 +168,9 @@ fn draw_moon_panel(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, toda
         dim("   Set "),
         Span::styled(md.set.map_or("none today".into(), |t| clock(Some(t))), Style::new().fg(MOON)),
     ]);
-    let local = |t: chrono::DateTime<Utc>| {
-        (t + Duration::seconds(fc.utc_offset_secs as i64)).naive_utc().format("%a %b %-d, %-I:%M %p").to_string()
+    let local = |t: Timestamp| {
+        let local = Offset::UTC.to_datetime(t + SignedDuration::from_secs(fc.utc_offset_secs as i64));
+        local.strftime("%a %b %-d, %-I:%M %p").to_string()
     };
     let mut next = [("Full moon", m.next_full), ("New moon ", m.next_new)];
     next.sort_by_key(|(_, t)| *t);
@@ -204,11 +207,11 @@ fn split_by_horizon(points: &[(f64, f64)]) -> Vec<(bool, Vec<(f64, f64)>)> {
     runs
 }
 
-fn draw_path(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, day: &SunDay, now: NaiveDateTime) {
-    let midnight = now.date().and_hms_opt(0, 0, 0).unwrap();
+fn draw_path(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, day: &SunDay, now: DateTime) {
+    let midnight = now.date().to_datetime(Time::midnight());
     let points: Vec<(f64, f64)> = (0..=144)
         .map(|k| {
-            let t = midnight + Duration::minutes(10 * k);
+            let t = midnight + SignedDuration::from_mins(10 * k);
             (k as f64 / 6.0, solar::sun_position(to_utc(fc, t), place.lat, place.lon).elevation)
         })
         .collect();
@@ -218,7 +221,7 @@ fn draw_path(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, day: &SunD
     // The moon's path too, faint, only while it's up.
     let moon_points: Vec<(f64, f64)> = (0..=144)
         .map(|k| {
-            let t = midnight + Duration::minutes(10 * k);
+            let t = midnight + SignedDuration::from_mins(10 * k);
             (k as f64 / 6.0, solar::moon_altitude(to_utc(fc, t), place.lat, place.lon))
         })
         .collect();
@@ -280,20 +283,20 @@ fn draw_path(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, day: &SunD
     draw_x_labels(f, inner, &y_labels, [0.0, 24.0], &DAY_TICKS);
 }
 
-fn draw_year(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: NaiveDate) {
+fn draw_year(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: Date) {
     let year = today.year();
-    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    let days = if NaiveDate::from_ymd_opt(year, 12, 31).unwrap().ordinal() == 366 { 366 } else { 365 };
-    let hours = |d: NaiveDate| {
+    let start = date(year, 1, 1);
+    let days = if start.in_leap_year() { 366 } else { 365 };
+    let hours = |d: Date| {
         let sd = solar::sun_day(d, place.lat, place.lon, fc.utc_offset_secs);
-        sd.day_length().map_or(0.0, |l| l.num_seconds() as f64 / 3600.0)
+        sd.day_length().map_or(0.0, |l| l.as_secs() as f64 / 3600.0)
     };
-    let points: Vec<(f64, f64)> = (0..days).map(|i| (i as f64, hours(start + Duration::days(i)))).collect();
+    let points: Vec<(f64, f64)> = (0..days).map(|i| (i as f64, hours(start + (i).days()))).collect();
     let (min_i, min_h) = points.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
     let (max_i, max_h) = points.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
     let lo = (min_h - 1.0).max(0.0).floor();
     let hi = (max_h + 1.0).min(24.0).ceil();
-    let t = (today.ordinal0() as f64, hours(today));
+    let t = ((today.day_of_year() - 1) as f64, hours(today));
     let today_pt = [t];
     let today_line = [(t.0, lo), (t.0, hi)];
 
@@ -310,15 +313,15 @@ fn draw_year(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: Nai
             .data(&points),
         Dataset::default().marker(Marker::Block).graph_type(GraphType::Scatter).style(Style::new().white()).data(&today_pt),
     ];
-    let date = |i: f64| (start + Duration::days(i as i64)).format("%b %-d").to_string();
+    let date = |i: f64| (start + (i as i64).days()).strftime("%b %-d").to_string();
     let title = Line::from(vec![
         Span::styled(" Daylight through the year ", Style::new().bold()),
         dim(format!(
             "shortest {} {} · longest {} {} ",
             date(min_i),
-            hm(Duration::seconds((min_h * 3600.0) as i64)),
+            hm(SignedDuration::from_secs((min_h * 3600.0) as i64)),
             date(max_i),
-            hm(Duration::seconds((max_h * 3600.0) as i64)),
+            hm(SignedDuration::from_secs((max_h * 3600.0) as i64)),
         )),
     ]);
     let y_labels: Vec<Line> = [lo, (lo + hi) / 2.0, hi].into_iter().map(|v| Line::from(format!("{v:.0}h"))).collect();
@@ -333,14 +336,14 @@ fn draw_year(f: &mut Frame, area: Rect, fc: &Forecast, place: &Place, today: Nai
     // A label at the start of each month; ones that would collide are skipped.
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     let ticks: Vec<(f64, &str)> = (1..=12)
-        .map(|m| (NaiveDate::from_ymd_opt(year, m, 1).unwrap().ordinal0() as f64, MONTHS[m as usize - 1]))
+        .map(|m| ((jiff::civil::date(year, m as i8, 1).day_of_year() - 1) as f64, MONTHS[m as usize - 1]))
         .collect();
     draw_x_labels(f, inner, &y_labels, bounds, &ticks);
 }
 
 fn draw_compact(f: &mut Frame, area: Rect, day: &SunDay, yesterday: &SunDay, moon: solar::MoonDay) {
-    let m = solar::moon_phase(Utc::now());
-    let t = |o: Option<NaiveDateTime>| o.map_or("—".into(), |t| t.format("%-I:%M%P").to_string());
+    let m = solar::moon_phase(Timestamp::now());
+    let t = |o: Option<DateTime>| o.map_or("—".into(), |t| t.strftime("%-I:%M%P").to_string());
     let mut lines = vec![
         Line::from(vec![
             Span::styled(" ☀ ", Style::new().fg(SUN)),

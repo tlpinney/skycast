@@ -1,7 +1,8 @@
 //! Open-Meteo client: geocoding plus today's forecast. No API key needed.
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, Utc};
+use jiff::civil::{Date, DateTime};
+use jiff::{SignedDuration, Timestamp, ZonedDateTime};
 use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +12,10 @@ const ALERTS_URL: &str = "https://api.weather.gov/alerts";
 /// How far back the alerts popup lists alerts that have ended, so one that came and went
 /// while skycast or the computer was asleep is still there to read. A day covers a fog
 /// statement at dawn looked for after work.
-pub const RECENT_ALERTS: chrono::Duration = chrono::Duration::hours(24);
+pub const RECENT_ALERTS: SignedDuration = SignedDuration::from_hours(24);
 /// How far back to ask for alert history. The NWS filters on when an alert was sent, and
 /// one sent days ago can have ended within [`RECENT_ALERTS`].
-const ALERT_HISTORY: chrono::Duration = chrono::Duration::days(3);
+const ALERT_HISTORY: SignedDuration = SignedDuration::from_hours(3 * 24);
 const AIR_URL: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,7 +61,7 @@ impl Units {
 
 #[derive(Debug, Clone)]
 pub struct Hour {
-    pub time: NaiveDateTime,
+    pub time: DateTime,
     pub temp: f64,
     pub precip_prob: u8,
     pub code: u8,
@@ -71,7 +72,7 @@ pub struct Hour {
 
 #[derive(Debug, Clone)]
 pub struct Day {
-    pub date: NaiveDate,
+    pub date: Date,
     pub code: u8,
     pub high: f64,
     pub low: f64,
@@ -100,9 +101,9 @@ pub struct Alert {
     pub instruction: Option<String>,
     pub area: String,
     /// When it ends (or, failing that, expires), in the issuing office's local time.
-    pub until: Option<DateTime<FixedOffset>>,
+    pub until: Option<ZonedDateTime>,
     /// When the NWS sent it.
-    pub sent: Option<DateTime<FixedOffset>>,
+    pub sent: Option<ZonedDateTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,13 +112,13 @@ pub struct Air {
     pub pm2_5: Option<f64>,
     pub ozone: Option<f64>,
     pub peak_aqi: u16,
-    pub peak_time: NaiveDateTime,
+    pub peak_time: DateTime,
 }
 
 #[derive(Debug, Clone)]
 pub struct Forecast {
     /// Local time at the location, per the API.
-    pub now: NaiveDateTime,
+    pub now: DateTime,
     /// The location's offset from UTC, in seconds.
     pub utc_offset_secs: i32,
     pub current_temp: f64,
@@ -140,8 +141,8 @@ pub struct Forecast {
     pub precip_sum: f64,
     pub wind_max: f64,
     pub uv_max: f64,
-    pub sunrise: NaiveDateTime,
-    pub sunset: NaiveDateTime,
+    pub sunrise: DateTime,
+    pub sunset: DateTime,
 
     /// Today's hours only.
     pub hours: Vec<Hour>,
@@ -313,8 +314,8 @@ struct RawDaily {
     sunset: Vec<String>,
 }
 
-fn parse_time(s: &str) -> Result<NaiveDateTime> {
-    NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").with_context(|| format!("bad time '{s}'"))
+fn parse_time(s: &str) -> Result<DateTime> {
+    DateTime::strptime("%Y-%m-%dT%H:%M", s).with_context(|| format!("bad time '{s}'"))
 }
 
 fn first<T: Copy>(v: &[Option<T>]) -> Option<T> {
@@ -391,7 +392,7 @@ pub fn fetch_today(place: &Place, units: Units) -> Result<Forecast> {
         .filter_map(|(i, t)| {
             let get = |v: &[Option<f64>]| v.get(i).copied().flatten();
             Some(Day {
-                date: NaiveDate::parse_from_str(t, "%Y-%m-%d").ok()?,
+                date: Date::strptime("%Y-%m-%d", t).ok()?,
                 code: d.weather_code.get(i).copied().flatten().unwrap_or(0),
                 high: get(&d.temperature_2m_max)?,
                 low: get(&d.temperature_2m_min)?,
@@ -468,7 +469,7 @@ fn fetch_air(place: &Place, hours: &mut [Hour]) -> Result<Air> {
         .json()
         .context("bad air quality response")?;
 
-    let hourly: Vec<(NaiveDateTime, u16)> = raw
+    let hourly: Vec<(DateTime, u16)> = raw
         .hourly
         .time
         .iter()
@@ -557,7 +558,7 @@ fn fetch_alerts(place: &Place, query: &[(&str, String)]) -> Result<Option<Vec<Al
     }
     let raw: RawAlerts = resp.error_for_status()?.json().context("bad alerts response")?;
     if !query.is_empty() {
-        return Ok(Some(ended(raw.features, Utc::now())));
+        return Ok(Some(ended(raw.features, Timestamp::now())));
     }
     let mut alerts: Vec<Alert> = raw.features.into_iter().map(alert).collect();
     alerts.sort_by_key(|a| std::cmp::Reverse(a.severity));
@@ -566,7 +567,7 @@ fn fetch_alerts(place: &Place, query: &[(&str, String)]) -> Result<Option<Vec<Al
 
 /// Alerts that ended within [`RECENT_ALERTS`], leaving out the active ones.
 fn fetch_recent_alerts(place: &Place, active: &[Alert]) -> Result<Vec<Alert>> {
-    let start = (Utc::now() - ALERT_HISTORY).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let start = (Timestamp::now() - ALERT_HISTORY).strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
     let recent = fetch_alerts(place, &[("start", start), ("status", "actual".into())])?.unwrap_or_default();
     Ok(recent.into_iter().filter(|a| !active.iter().any(|b| b.id == a.id)).collect())
 }
@@ -574,22 +575,23 @@ fn fetch_recent_alerts(place: &Place, active: &[Alert]) -> Result<Vec<Alert>> {
 /// From an alert history, the alerts that ended within [`RECENT_ALERTS`] of `now`, newest first. A message
 /// that a later one updates or cancels is left out (the later one stands for it), and so
 /// are the cancellations themselves.
-fn ended(history: Vec<RawAlertFeature>, now: DateTime<Utc>) -> Vec<Alert> {
+fn ended(history: Vec<RawAlertFeature>, now: Timestamp) -> Vec<Alert> {
     let replaced: HashSet<String> =
         history.iter().flat_map(|f| f.properties.references.iter().map(|r| r.identifier.clone())).collect();
     let mut alerts: Vec<Alert> = history
         .into_iter()
         .filter(|f| !replaced.contains(&f.id) && f.properties.message_type.as_deref() != Some("Cancel"))
         .map(alert)
-        .filter(|a| a.until.is_some_and(|t| t <= now && t > now - RECENT_ALERTS))
+        .filter(|a| a.until.as_ref().map(ZonedDateTime::timestamp).is_some_and(|t| t <= now && t > now - RECENT_ALERTS))
         .collect();
-    alerts.sort_by_key(|a| std::cmp::Reverse(a.sent));
+    alerts.sort_by(|a, b| b.sent.cmp(&a.sent));
     alerts
 }
 
 fn alert(f: RawAlertFeature) -> Alert {
     let p = f.properties;
-    let time = |t: Option<String>| t.and_then(|t| DateTime::parse_from_rfc3339(&t).ok());
+    // NWS times carry an offset but no zone name, so these keep the issuing office's offset.
+    let time = |t: Option<String>| t.and_then(|t| ZonedDateTime::strptime("%Y-%m-%dT%H:%M:%S%:z", &t).ok());
     Alert {
         id: f.id,
         severity: match p.severity.as_deref() {
@@ -618,7 +620,7 @@ pub fn compass(deg: f64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{GeoResult, RawAlerts, compass, ended, rank};
-    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
 
     fn geo(name: &str, admin1: &str, country: &str, code: &str) -> GeoResult {
         GeoResult {
@@ -656,7 +658,7 @@ mod tests {
         ]}"#,
         )
         .unwrap();
-        let now = DateTime::parse_from_rfc3339("2026-11-12T12:00:00-05:00").unwrap().with_timezone(&Utc);
+        let now: Timestamp = "2026-11-12T12:00:00-05:00".parse().unwrap();
         let ids: Vec<String> = ended(raw.features, now).into_iter().map(|a| a.id).collect();
         assert_eq!(ids, ["a1", "b2"]);
     }

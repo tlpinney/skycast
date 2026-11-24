@@ -1,6 +1,8 @@
 //! Tides screen: current level, next high and low, a two-day curve, and a high/low table.
 
-use chrono::{Duration, NaiveDateTime, Timelike, Utc};
+use jiff::civil::{Date, DateTime, Time};
+use jiff::tz::Offset;
+use jiff::{SignedDuration, Timestamp, ToSpan};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Flex, Layout, Rect},
@@ -23,16 +25,16 @@ fn dim(s: impl Into<String>) -> Span<'static> {
     Span::styled(s.into(), Style::new().dark_gray())
 }
 
-fn local_now(fc: &Forecast) -> NaiveDateTime {
-    (Utc::now() + Duration::seconds(fc.utc_offset_secs as i64)).naive_utc()
+fn local_now(fc: &Forecast) -> DateTime {
+    Offset::UTC.to_datetime(Timestamp::now() + SignedDuration::from_secs(fc.utc_offset_secs as i64))
 }
 
-fn until(d: Duration) -> String {
-    let m = d.num_minutes().max(0);
+fn until(d: SignedDuration) -> String {
+    let m = d.as_mins().max(0);
     if m >= 60 { format!("in {}h {:02}m", m / 60, m % 60) } else { format!("in {m}m") }
 }
 
-fn short(t: NaiveDateTime) -> String {
+fn short(t: DateTime) -> String {
     let h = t.hour();
     let suffix = if h < 12 { "a" } else { "p" };
     let h12 = match h % 12 {
@@ -80,9 +82,9 @@ fn draw_tides(f: &mut Frame, area: Rect, fc: &Forecast, t: &Tides) {
     draw_table(f, table, t, now);
 }
 
-fn draw_summary(f: &mut Frame, area: Rect, t: &Tides, now: NaiveDateTime) {
+fn draw_summary(f: &mut Frame, area: Rect, t: &Tides, now: DateTime) {
     let level = t.height_at(now);
-    let trend = match (level, t.height_at(now + Duration::minutes(10))) {
+    let trend = match (level, t.height_at(now + SignedDuration::from_mins(10))) {
         (Some(a), Some(b)) if b > a + 0.001 => ("rising ↑", WATER),
         (Some(a), Some(b)) if b < a - 0.001 => ("falling ↓", LOW),
         (Some(_), Some(_)) => ("slack", Color::Gray),
@@ -105,8 +107,8 @@ fn draw_summary(f: &mut Frame, area: Rect, t: &Tides, now: NaiveDateTime) {
         lines.push(Line::from(vec![
             dim(word),
             Span::styled(format!("{:.1} {}", e.height, t.unit), Style::new().fg(color).bold()),
-            Span::raw(format!(" at {}", e.time.format("%-I:%M %p"))),
-            dim(format!("  {}", until(e.time - now))),
+            Span::raw(format!(" at {}", e.time.strftime("%-I:%M %p"))),
+            dim(format!("  {}", until(e.time.duration_since(now)))),
         ]));
     }
     let source = if t.source == "NOAA" {
@@ -118,11 +120,11 @@ fn draw_summary(f: &mut Frame, area: Rect, t: &Tides, now: NaiveDateTime) {
     f.render_widget(Paragraph::new(lines).block(panel("Tides")), area);
 }
 
-fn draw_chart(f: &mut Frame, area: Rect, t: &Tides, now: NaiveDateTime) {
+fn draw_chart(f: &mut Frame, area: Rect, t: &Tides, now: DateTime) {
     // Today and tomorrow, as hours since today's midnight.
-    let start = now.date().and_hms_opt(0, 0, 0).unwrap();
-    let end = start + Duration::days(2);
-    let x = |time: NaiveDateTime| (time - start).num_minutes() as f64 / 60.0;
+    let start = now.date().to_datetime(Time::midnight());
+    let end = start + (2).days();
+    let x = |time: DateTime| time.duration_since(start).as_mins() as f64 / 60.0;
     let curve: Vec<(f64, f64)> =
         t.curve.iter().filter(|(ct, _)| *ct >= start && *ct <= end).map(|&(ct, h)| (x(ct), h)).collect();
     if curve.is_empty() {
@@ -168,8 +170,8 @@ fn draw_chart(f: &mut Frame, area: Rect, t: &Tides, now: NaiveDateTime) {
     draw_x_labels(f, inner, &y_labels, [0.0, 48.0], &TICKS);
 }
 
-fn draw_table(f: &mut Frame, area: Rect, t: &Tides, now: NaiveDateTime) {
-    let row = |label: &'static str, date: chrono::NaiveDate| {
+fn draw_table(f: &mut Frame, area: Rect, t: &Tides, now: DateTime) {
+    let row = |label: &'static str, date: Date| {
         let mut spans = vec![Span::styled(format!("{label:<9}"), Style::new().bold())];
         for e in t.events.iter().filter(|e| e.time.date() == date) {
             let past = e.time < now;
@@ -181,6 +183,6 @@ fn draw_table(f: &mut Frame, area: Rect, t: &Tides, now: NaiveDateTime) {
         Line::from(spans)
     };
     let today = now.date();
-    let lines = vec![row("Today", today), row("Tomorrow", today + Duration::days(1))];
+    let lines = vec![row("Today", today), row("Tomorrow", today + 1.days())];
     f.render_widget(Paragraph::new(lines).block(panel(&format!("High and low tides ({})", t.unit))), area);
 }
